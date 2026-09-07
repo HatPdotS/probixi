@@ -45,6 +45,7 @@ dependencies = [
 probixi = "probixi.cli:main"
 
 [project.optional-dependencies]
+gpu = ["triton>=3.5,<4", "nvidia-libnvcomp-cu12==5.3.0.16"]
 docs = [
     "myst-parser",
     "piccolo_theme",
