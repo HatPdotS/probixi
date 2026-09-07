@@ -26,6 +26,7 @@ from .io import (
     read_mask,
     render_frame,
 )
+from .kernels import Engine, use_engine
 from .peakfinding import PeakFinder, PeakStream
 from .peakfinding.noise import (
     CalibrationResult,
@@ -576,6 +577,7 @@ class Probixi:
             chain([first], it), path, batch_size=batch_size, **kwargs
         )
 
+    @use_engine(Engine.REFERENCE)
     def calibrate(
         self,
         n_seed: int = 32,

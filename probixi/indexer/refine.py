@@ -6,6 +6,8 @@ from typing import Optional
 import torch
 from torch import Tensor
 
+from ..kernels import select
+
 
 @dataclass
 class RefineResult:
@@ -94,6 +96,32 @@ def refine_multiframe_known_B(
         return []
     if len(q_obs_per_frame) != F:
         raise ValueError("A_init_per_frame and q_obs_per_frame must align")
+    supported = (
+        max_iters > 0
+        and reassign_every > 0
+        and all(0 < len(a) <= 128 and a.shape[1:] == (3, 3) for a in A_init_per_frame)
+        and all(0 < len(q) <= 128 and q.shape[1:] == (3,) for q in q_obs_per_frame)
+        and all(
+            t.is_cuda
+            and t.dtype == torch.float64
+            and not t.requires_grad
+            and t.device == A_init_per_frame[0].device
+            for t in [*A_init_per_frame, *q_obs_per_frame]
+        )
+        and (weights_per_frame is None or len(weights_per_frame) == F)
+    )
+    kernel = select("refine", supported)
+    if kernel is not None:
+        return kernel.refine_triton(
+            A_init_per_frame,
+            q_obs_per_frame,
+            q_tolerance=q_tolerance,
+            lr=lr,
+            max_iters=max_iters,
+            reassign_every=reassign_every,
+            min_indexed=min_indexed,
+            weights_per_frame=weights_per_frame,
+        )
     use_soft = weights_per_frame is not None
 
     K_per = [A.shape[0] for A in A_init_per_frame]
