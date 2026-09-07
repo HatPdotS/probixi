@@ -17,7 +17,7 @@ from .integrate import (
     peak_resolution_limit,
     spot_enrichment,
 )
-from .lattice import cell_to_B, decompose_A
+from .lattice import B_to_cell, cell_to_B
 from .predict import detector_q_max, predict_reflections
 from .refine import RefineResult, refine_multiframe_known_B
 from .rocking import estimate_mosaicity
@@ -702,7 +702,9 @@ class Indexer:
                 continue
             A_cand = result.A[cand]
             try:
-                U, B, cell = decompose_A(A_cand)
+                cell = B_to_cell(A_cand)
+                B = cell_to_B(cell, device=A_cand.device, dtype=A_cand.dtype)
+                U = A_cand @ torch.linalg.inv(B)
             except Exception:
                 continue
             if not self._cell_matches_target(cell):
