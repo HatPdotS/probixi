@@ -159,6 +159,38 @@ CREATE TABLE peaks (
 );
 """
 
+_V2_FRAME_COLUMNS = (
+    "frame_id",
+    "frame_index",
+    "filename",
+    "event",
+    "indexed",
+    "serial",
+    "n_peaks",
+    "scale",
+    "scale_sigma",
+    "num_reflections",
+)
+_V2_FRAME_INDICES = tuple(_FRAME_COLUMNS.index(c) for c in _V2_FRAME_COLUMNS)
+_frame_start = _SCHEMA.index("CREATE TABLE frames (")
+_frame_end = _SCHEMA.index("CREATE TABLE reflections (")
+_SCHEMA_V2 = (
+    _SCHEMA[:_frame_start]
+    + "CREATE TABLE schema_version (version INTEGER); INSERT INTO schema_version VALUES (2);"
+    + "CREATE TABLE frames (frame_id VARCHAR PRIMARY KEY, frame_index INTEGER, "
+    "filename VARCHAR, event INTEGER, indexed BOOLEAN, serial INTEGER, "
+    "n_peaks INTEGER, scale DOUBLE, scale_sigma DOUBLE, num_reflections INTEGER);"
+    + _SCHEMA[_frame_start:_frame_end]
+    .replace("VARCHAR PRIMARY KEY", "VARCHAR")
+    .replace(
+        "CREATE TABLE frames (",
+        "CREATE TABLE crystals (crystal_id VARCHAR PRIMARY KEY, lattice_index INTEGER,",
+    )
+    + _SCHEMA[_frame_end:].replace(
+        "CREATE TABLE reflections (", "CREATE TABLE reflections (crystal_id VARCHAR,"
+    )
+)
+
 _INDEXES = """
 CREATE INDEX idx_reflections_frame ON reflections(frame_id);
 CREATE INDEX idx_peaks_frame ON peaks(frame_id);
@@ -207,6 +239,9 @@ class DuckDBOffloader(_StreamWriter):
     files : dict, optional
         Loader file map, used both to resolve a global frame index to its source
         file/event and to enumerate the non-indexed frames.
+    multi_lattice : bool, default False
+        Use schema v2 with separate physical frames and crystal identities.
+        False retains the single-lattice schema for existing consumers.
     frame_range : tuple[int, int], optional
         Half-open ``[lo, hi)`` global-frame-index range this writer is
         responsible for. When set, the non-indexed backfill is restricted to
@@ -231,6 +266,7 @@ class DuckDBOffloader(_StreamWriter):
         frame_range: Optional[tuple[int, int]] = None,
         indexer_name: str = "probixi",
         panel: str = "0",
+        multi_lattice: bool = False,
     ):
         super().__init__(
             path,
@@ -241,6 +277,8 @@ class DuckDBOffloader(_StreamWriter):
             panel=panel,
         )
         self.cell = cell
+        self.multi_lattice = multi_lattice
+        self._crystal_rows: list[tuple] = []
         self._frame_range = frame_range
         self._conn = None
         self._frame_rows: list[tuple] = []
@@ -252,7 +290,7 @@ class DuckDBOffloader(_StreamWriter):
         if self.path.exists():
             self.path.unlink()
         self._conn = duckdb.connect(str(self.path))
-        self._conn.execute(_SCHEMA)
+        self._conn.execute(_SCHEMA_V2 if self.multi_lattice else _SCHEMA)
         self._write_metadata_tables()
         return self
 
@@ -267,24 +305,35 @@ class DuckDBOffloader(_StreamWriter):
             self._conn.close()
             self._conn = None
 
-    def write(self, result: "IndexResult") -> None:
-        """Buffer one indexed frame (its stats, reflections and peaks)."""
+    def write(self, result) -> None:
+        """Buffer one image and its lattices.
+
+        Parameters
+        ----------
+        result : IndexResult or FrameIndexResult
+            Frame-grouped output is required for multiple lattices. Enable
+            ``multi_lattice`` on the writer to select schema version 2.
+        """
         if self._conn is None:
             raise RuntimeError("DuckDBOffloader must be used as a context manager")
+        crystals = getattr(result, "crystals", [result])
+        if len(crystals) > 1 and not self.multi_lattice:
+            raise ValueError(
+                "multiple lattices require multi_lattice=True (DuckDB schema v2)"
+            )
         self._serial += 1
         filename, event = self._locate(result.frame_index)
         fid = frame_id(filename, event)
-
         peak_recip = self._append_peaks(result, fid)
-        refl = self._reflections(result)
-        for (row, col), miller, intensity, sigma, peak, background in refl:
-            h, k, l = miller  # noqa: E741
-            self._refl_rows.append(
-                (
+        total = 0
+        for lattice_index, crystal in enumerate(crystals):
+            cid = f"{fid}:{lattice_index}"
+            refl = self._reflections(crystal)
+            total += len(refl)
+            for (row, col), miller, intensity, sigma, peak, background in refl:
+                record = (
                     fid,
-                    int(h),
-                    int(k),
-                    int(l),
+                    *(int(h) for h in miller),
                     float(intensity),
                     float(sigma),
                     float(peak),
@@ -294,11 +343,22 @@ class DuckDBOffloader(_StreamWriter):
                     self._panel_for(col, row),
                     self._resolution_nm_inv(row, col),
                 )
+                self._refl_rows.append((cid, *record) if self.multi_lattice else record)
+            record = self._frame_row(
+                crystal, fid, filename, event, len(refl), peak_recip
             )
-
-        self._frame_rows.append(
-            self._frame_row(result, fid, filename, event, len(refl), peak_recip)
-        )
+            if self.multi_lattice:
+                self._crystal_rows.append((cid, lattice_index, *record))
+        if crystals:
+            record = list(
+                self._frame_row(crystals[0], fid, filename, event, total, peak_recip)
+            )
+            record[_FRAME_COLUMNS.index("n_peaks")] = result.n_peaks
+        else:
+            record = self._peaks_frame_row(
+                fid, filename, event, result.frame_index, result.n_peaks, peak_recip
+            )
+        self._frame_rows.append(record)
         if result.frame_index is not None:
             self._seen.add(int(result.frame_index))
         self._maybe_flush()
@@ -553,23 +613,52 @@ class DuckDBOffloader(_StreamWriter):
                     continue
                 if idx in self._seen:
                     continue
+                filename, physical_event = self._locate(idx)
                 self._frame_rows.append(
-                    _unindexed_frame_row(frame_id(fname, event), idx, fname, event)
+                    _unindexed_frame_row(
+                        frame_id(filename, physical_event),
+                        idx,
+                        filename,
+                        physical_event,
+                    )
                 )
                 if len(self._frame_rows) >= _FLUSH_ROWS:
                     self._flush()
 
     def _flush(self) -> None:
         assert self._conn is not None
-        if self._frame_rows:
+        self._conn.execute("BEGIN TRANSACTION")
+        try:
+            self._flush_rows()
+            self._conn.execute("COMMIT")
+        except Exception:
+            self._conn.execute("ROLLBACK")
+            raise
+
+    def _flush_rows(self) -> None:
+        assert self._conn is not None
+        if self._crystal_rows:
             self._conn.executemany(
-                f"INSERT INTO frames VALUES ({', '.join('?' * len(_FRAME_COLUMNS))})",
-                self._frame_rows,
+                f"INSERT INTO crystals VALUES ({', '.join('?' * (len(_FRAME_COLUMNS)+2))})",
+                self._crystal_rows,
+            )
+            self._crystal_rows.clear()
+        if self._frame_rows:
+            rows = self._frame_rows
+            columns = _FRAME_COLUMNS
+            if self.multi_lattice:
+                columns = _V2_FRAME_COLUMNS
+                rows = [tuple(r[i] for i in _V2_FRAME_INDICES) for r in rows]
+            self._conn.executemany(
+                f"INSERT INTO frames VALUES ({', '.join('?' * len(columns))})",
+                rows,
             )
             self._frame_rows.clear()
         if self._refl_rows:
             self._conn.executemany(
-                "INSERT INTO reflections VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "INSERT INTO reflections VALUES ("
+                + ", ".join("?" * (13 if self.multi_lattice else 12))
+                + ")",
                 self._refl_rows,
             )
             self._refl_rows.clear()

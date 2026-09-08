@@ -209,7 +209,10 @@ def test_index_stream_stats_track_frames_hits_and_indexed(run_files, geom_path):
     )
     # funnel starts empty; the tap wrapper in Probixi.index_stream must not drop it
     assert stream.stats.frames == 0
-    n = len(stream.collect())
+    n = 0
+    for _ in stream:
+        n += 1
+        assert stream.stats.frames >= stream.stats.hits >= stream.stats.indexed
     # every planted frame is a hit (many peaks) and indexes here
     assert stream.stats.frames == N_PLANTED
     assert stream.stats.hits == N_PLANTED

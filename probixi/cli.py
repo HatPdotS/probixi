@@ -7,6 +7,7 @@ from typing import Any, Literal, Optional, cast
 import click
 import torch
 
+from probixi.indexer import IntegrateConfig, SeedConfig
 from probixi.io import DataOffloader, DuckDBOffloader, PeakOffloader, is_duckdb_path
 from probixi.probixi import Probixi
 
@@ -69,6 +70,11 @@ def _run_multi_gpu(device_list: list, **kw) -> None:
         enrich_alpha=kw["enrich_alpha"],
         threads_per_worker=kw["threads_per_worker"],
         quiet=kw["quiet"],
+        seed=SeedConfig(max_lattices=kw["max_lattices"]),
+        integrate=IntegrateConfig(
+            radii=kw["integration_radii"], ewald_cutoff=kw["ewald_cutoff"]
+        ),
+        recalibrate_every=kw["recalibrate_every"],
     )
 
 
@@ -131,6 +137,27 @@ def _run_multi_gpu(device_list: list, **kw) -> None:
     default=8,
     show_default=True,
     help="Frames per batched refinement pass.",
+)
+@click.option(
+    "--integration-radii",
+    type=(float, float, float),
+    default=None,
+    help="Signal, inner-background and outer-background radii (pixels).",
+)
+@click.option(
+    "--ewald-cutoff",
+    type=click.FloatRange(min=0, min_open=True),
+    default=None,
+    help="Global radial Ewald distance (A^-1); default: adaptive prediction.",
+)
+@click.option(
+    "--max-lattices", type=click.IntRange(min=1), default=1, show_default=True
+)
+@click.option(
+    "--recalibrate-every",
+    type=click.IntRange(min=0),
+    default=None,
+    help="Input frames between fresh calibrations; 0 freezes the initial estimate.",
 )
 @click.option("--device", default=None, help="Torch device (default: auto).")
 @click.option(
@@ -247,6 +274,10 @@ def main(
     start: Optional[int],
     stop: Optional[int],
     batch_size: int,
+    integration_radii: Optional[tuple],
+    ewald_cutoff: Optional[float],
+    max_lattices: int,
+    recalibrate_every: Optional[int],
     device: Optional[str],
     devices: Optional[str],
     gpus: Optional[int],
@@ -291,6 +322,10 @@ def main(
             start=start,
             stop=stop,
             batch_size=batch_size,
+            integration_radii=integration_radii,
+            ewald_cutoff=ewald_cutoff,
+            max_lattices=max_lattices,
+            recalibrate_every=recalibrate_every,
             seed_frames=seed_frames,
             target_noise_peaks=target_noise_peaks,
             noise_mode=noise_mode,
@@ -315,6 +350,8 @@ def main(
         flux_variance=flux_variance,
         flux_var_floor=flux_var_floor,
         device=dev,
+        seed=SeedConfig(max_lattices=max_lattices),
+        integrate=IntegrateConfig(radii=integration_radii, ewald_cutoff=ewald_cutoff),
     )
 
     meta = probixi.metadata
@@ -389,9 +426,13 @@ def main(
         click.echo(f"Wrote peaks for {n} frame(s) to {output}")
         return
 
-    stream = probixi.index_stream(frames, batch_size=batch_size, start_index=start or 0)
-    if enrich_gate:
-        stream = stream.enrich_gate(enrich_alpha)
+    stream = probixi.index_frame_stream(
+        frames,
+        batch_size=batch_size,
+        start_index=start or 0,
+        recalibrate_every=recalibrate_every,
+        enrich_alpha=enrich_alpha if enrich_gate else None,
+    )
     stats = stream.stats
     last_log = time.monotonic() - _PROGRESS_INTERVAL_S
     offload_kwargs: dict[str, Any] = dict(
@@ -403,6 +444,7 @@ def main(
     )
     if is_duckdb_path(output):
         offloader = DuckDBOffloader
+        offload_kwargs["multi_lattice"] = max_lattices > 1
         offload_kwargs["frame_range"] = (
             start or 0,
             stop if stop is not None else meta.n_frames,
@@ -413,7 +455,7 @@ def main(
         n = 0
         for result in stream:
             off.write(result)
-            n += 1
+            n += bool(result.crystals)
             now = time.monotonic()
             if not quiet and now - last_log >= _PROGRESS_INTERVAL_S:
                 last_log = now
@@ -430,7 +472,7 @@ def main(
             f"{n} indexed ({_pct(n, stats.frames)}, "
             f"{_pct(n, stats.hits)} of hits)"
         )
-    click.echo(f"Wrote {n} indexed frame(s) to {output}")
+    click.echo(f"Wrote {n} indexed frame(s), {stats.crystals} crystals to {output}")
 
 
 if __name__ == "__main__":

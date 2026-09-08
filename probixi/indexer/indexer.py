@@ -20,6 +20,7 @@ from .integrate import (
 from .lattice import B_to_cell, cell_to_B
 from .predict import detector_q_max, predict_reflections
 from .refine import RefineResult, refine_multiframe_known_B
+from .rings import integrate_rings, keep_non_overlapping, snap_positions
 from .rocking import estimate_mosaicity
 from .seed import sphere_seed_candidates
 
@@ -43,6 +44,7 @@ class IndexStats:
     frames: int = 0
     hits: int = 0
     indexed: int = 0
+    crystals: int = 0
 
     @property
     def hit_rate(self) -> float:
@@ -57,7 +59,7 @@ class IndexStats:
 
 @dataclass
 class IndexResult:
-    """Indexing solution for a single frame.
+    """Indexing solution for one crystal in a frame.
 
     Attributes
     ----------
@@ -106,8 +108,8 @@ class IndexResult:
         (M,) mean per-pixel noise background under each box (the CrystFEL
         stream's ``background`` column; informational only).
     diffraction_limit : float, optional
-        Per-crystal resolution limit (nm^-1) from integrated I/sigma; reflections
-        beyond it are dropped and it is written as the stream's
+        Per-crystal resolution estimate (nm^-1) from integrated I/sigma; reported
+        without truncating reflections, as the stream's
         ``diffraction_resolution_limit``.
     enrichment : float, optional
         Bright-rate of predicted spots over the background bright-rate (see
@@ -157,6 +159,31 @@ class IndexResult:
 
 
 @dataclass
+class FrameIndexResult:
+    """One physical image and its accepted lattices.
+
+    Attributes
+    ----------
+    frame_index : int
+        Absolute input index.
+    crystals : list of IndexResult
+        Accepted lattices in search order.
+    positions, intensities : Tensor
+        Detected peaks supplied to the first lattice search.
+    """
+
+    frame_index: int
+    crystals: list[IndexResult]
+    positions: Tensor
+    intensities: Tensor
+
+    @property
+    def n_peaks(self) -> int:
+        """Number of original detected peaks."""
+        return len(self.positions)
+
+
+@dataclass
 class SeedConfig:
     """Tolerances and limits for generating candidate orientations.
 
@@ -175,17 +202,25 @@ class SeedConfig:
         intensity, when available). The full peak set still drives refinement and
         the final solution.
     n_directions : int
-        Fibonacci-sphere sample count for the sphere seeder.
+        Number of unsigned Fibonacci axes; both signs are searched.
     n_spin : int
         Number of in-plane (roll) angles tried per kept direction.
     top_directions : int
-        Best sphere directions carried into the spin stage.
+        Unsigned-axis budget; twice this many directed axes enter the spin stage.
     adaptive_sparse : bool
         Widen the orientation search on peak-starved frames: when a frame's
         seeding peak count is below ``sparse_peak_threshold``, the sphere search
         counts are multiplied by ``sparse_scale``.
     sparse_peak_threshold : int
         Seeding-peak count below which a frame is treated as sparse.
+    max_index_peaks : int, optional
+        Cap all indexing inputs by intensity, including refinement.
+    rank_sigma : float, optional
+        Gaussian residual width (A^-1) for geometric candidate ranking.
+    max_lattices : int
+        Maximum successive lattices per image.
+    peel_radius : float
+        Reciprocal residual (A^-1) below which a peak is removed before reseeding.
     sparse_scale : float
         Multiplier applied to the sphere search counts on sparse frames.
     """
@@ -200,6 +235,20 @@ class SeedConfig:
     adaptive_sparse: bool = True
     sparse_peak_threshold: int = 30
     sparse_scale: float = 2.0
+    max_index_peaks: Optional[int] = None
+    rank_sigma: Optional[float] = None
+    max_lattices: int = 1
+    peel_radius: float = 0.006
+
+    def __post_init__(self) -> None:
+        if self.max_lattices < 1:
+            raise ValueError("max_lattices must be positive")
+        if self.max_index_peaks is not None and self.max_index_peaks < 6:
+            raise ValueError("max_index_peaks must be at least six")
+        for name in ("rank_sigma", "peel_radius"):
+            value = getattr(self, name)
+            if value is not None and (not math.isfinite(value) or value <= 0):
+                raise ValueError(f"{name} must be finite and positive")
 
 
 @dataclass
@@ -276,6 +325,10 @@ class IntegrateConfig:
         high-resolution peak tail that would otherwise inflate the reported
         limit and pull noise shells into the merge; ``<= 0`` uses every indexed
         peak. Falls back to all peaks for a crystal with none above the floor.
+    radii : tuple of float, optional
+        Signal and inner/outer background radii in pixels; None uses boxes.
+    ewald_cutoff : float, optional
+        Resolution-independent radial Ewald distance (A^-1); None uses the adaptive model.
     adu_per_photon : float, optional
         Detector gain used for the signal shot-noise term in sigma(I). ``None``
         auto-detects it from the measured photon-transfer gain, else the
@@ -299,6 +352,23 @@ class IntegrateConfig:
     resolution_percentile: float = 0.90  # fallback estimator (sparse crystals)
     resolution_snr_floor: float = 0.0
     adu_per_photon: Optional[float] = None
+    radii: Optional[tuple[float, float, float]] = None
+    ewald_cutoff: Optional[float] = None
+
+    def __post_init__(self) -> None:
+        if self.radii is not None:
+            if (
+                len(self.radii) != 3
+                or not all(math.isfinite(r) for r in self.radii)
+                or not 0 < self.radii[0] < self.radii[1] < self.radii[2]
+            ):
+                raise ValueError(
+                    "radii must be positive, increasing signal/inner/outer radii"
+                )
+        if self.ewald_cutoff is not None and (
+            not math.isfinite(self.ewald_cutoff) or self.ewald_cutoff <= 0
+        ):
+            raise ValueError("ewald_cutoff must be finite and positive (A^-1)")
 
 
 @dataclass
@@ -339,10 +409,10 @@ class IndexStream:
         self.stats = stats if stats is not None else IndexStats()
 
     def map(self, fn: Callable[[IndexResult], IndexResult]) -> "IndexStream":
-        return IndexStream((fn(r) for r in self._source), stats=self.stats)
+        return type(self)((fn(r) for r in self._source), stats=self.stats)
 
     def filter(self, predicate: Callable[[IndexResult], bool]) -> "IndexStream":
-        return IndexStream((r for r in self._source if predicate(r)), stats=self.stats)
+        return type(self)((r for r in self._source if predicate(r)), stats=self.stats)
 
     def tap(self, fn: Callable[[IndexResult], None]) -> "IndexStream":
         def _gen() -> Iterator[IndexResult]:
@@ -350,7 +420,7 @@ class IndexStream:
                 fn(r)
                 yield r
 
-        return IndexStream(_gen(), stats=self.stats)
+        return type(self)(_gen(), stats=self.stats)
 
     def enrich_gate(self, alpha: float = 1e-3) -> "IndexStream":
         """Drop solutions whose predicted spots are not backed by image signal.
@@ -384,6 +454,7 @@ class IndexStream:
         geometry_file=None,
         files: Optional[dict] = None,
         panel: str = "0",
+        multi_lattice: bool = False,
     ) -> int:
         """Drain the stream into a DuckDB database at ``path``.
 
@@ -406,11 +477,14 @@ class IndexStream:
             Loader file map; enables the non-indexed frame backfill.
         panel : str, default "0"
             Fallback panel name for out-of-panel peaks/reflections.
+        multi_lattice : bool, default False
+            Select DuckDB schema v2; multiple lattices must be supplied through
+            ``index_frame_stream`` so they share one physical-frame record.
 
         Returns
         -------
         int
-            Number of indexed frames written.
+            Number of input result records written.
         """
         from ..io.db import DuckDBOffloader
 
@@ -421,6 +495,7 @@ class IndexStream:
             geometry_file=geometry_file,
             files=files,
             panel=panel,
+            multi_lattice=multi_lattice,
         ) as off:
             return self.to_stream(off)
 
@@ -436,6 +511,40 @@ class IndexStream:
 
     def __iter__(self) -> Iterator[IndexResult]:
         return self._source
+
+
+class FrameIndexStream(IndexStream):
+    """Lazy physical-frame results sharing indexing funnel statistics."""
+
+    def flatten(self) -> IndexStream:
+        """Yield each accepted lattice while retaining shared frame statistics.
+
+        Returns
+        -------
+        IndexStream
+            Individual crystal results in input order.
+        """
+        return IndexStream(
+            (r for frame in self for r in frame.crystals), stats=self.stats
+        )
+
+    def enrich_gate(self, alpha=1e-3):
+        """Reject enrichment gating after frame-wide overlap exclusion.
+
+        Parameters
+        ----------
+        alpha : float
+            Requested probability cutoff. Pass it as ``enrich_alpha`` when
+            constructing the frame stream instead.
+
+        Raises
+        ------
+        ValueError
+            Late selection cannot restore reflections excluded by other lattices.
+        """
+        raise ValueError(
+            "pass enrich_alpha to index_frame_stream before overlap exclusion"
+        )
 
 
 class Indexer:
@@ -557,8 +666,17 @@ class Indexer:
         if not positions_by_frame:
             return {}
 
+        data = {
+            i: self._cap_peak_data(
+                p,
+                (intensities_by_frame or {}).get(i),
+                (sigmas_by_frame or {}).get(i),
+                (weights_by_frame or {}).get(i),
+            )
+            for i, p in positions_by_frame.items()
+        }
         seeded: list[tuple[int, int, Tensor, Tensor, Optional[Tensor]]] = []
-        for idx, positions in positions_by_frame.items():
+        for idx, (positions, intensities, _, weights) in data.items():
             if (
                 positions.ndim != 2
                 or positions.shape[-1] != 2
@@ -567,8 +685,6 @@ class Indexer:
                 continue
             rotation = (frame_rotations or {}).get(idx)
             q = self.lift(positions, frame_rotation=rotation)
-            intensities = (intensities_by_frame or {}).get(idx)
-            weights = (weights_by_frame or {}).get(idx)
             with torch.no_grad():
                 # Seed on a bounded subset of the brightest peaks
                 keep = self._seed_keep_indices(q, intensities)
@@ -599,14 +715,15 @@ class Indexer:
         )
 
         out: dict[int, IndexResult] = {}
-        for (idx, n_peaks, _, _, _), rr in zip(seeded, results):
+        for (idx, n_peaks, q, _, _), rr in zip(seeded, results):
             built = self._build_indexing_result(
                 rr,
                 frame_index=idx,
                 n_peaks=n_peaks,
-                positions=positions_by_frame[idx],
-                intensities=(intensities_by_frame or {}).get(idx),
-                sigmas=(sigmas_by_frame or {}).get(idx),
+                positions=data[idx][0],
+                q=q,
+                intensities=data[idx][1],
+                sigmas=data[idx][2],
             )
             if built is not None:
                 out[idx] = built
@@ -666,6 +783,7 @@ class Indexer:
         positions: Tensor,
         intensities: Optional[Tensor] = None,
         sigmas: Optional[Tensor] = None,
+        q: Optional[Tensor] = None,
     ) -> Optional[IndexResult]:
         # Pick the best refined candidate whose cell matches the target, or None.
         if result.A.shape[0] == 0:
@@ -680,6 +798,12 @@ class Indexer:
             )
         n_indexed = result.n_indexed
         soft = result.soft_score
+        if self.seed.rank_sigma is not None:
+            q = self.lift(positions) if q is None else q
+            predicted = torch.einsum("cij,cnj->cni", result.A, result.hkl.to(result.A))
+            soft = torch.exp(
+                -((predicted - q).square().sum(-1)) / (2 * self.seed.rank_sigma**2)
+            ).sum(-1)
         rmsd = result.rmsd
         # rank by confidence-weighted inlier evidence breaking ties toward lower rmsd (scaled to stay below 1)
         score = soft - rmsd / (rmsd.max().clamp_min(1e-12) * 1e3)
@@ -726,94 +850,231 @@ class Indexer:
         intensities = stats.intensity_sum.to(device=self.device, dtype=self.dtype)
         sigmas = stats.intensity_sigma.to(device=self.device, dtype=self.dtype)
         weights = stats.posterior_mean.to(device=self.device, dtype=self.dtype)
-        return positions, intensities, sigmas, weights
+        return self._cap_peak_data(positions, intensities, sigmas, weights)
 
-    def index_stream(
+    def _cap_peak_data(self, positions, intensities, sigmas, weights):
+        values = (positions, intensities, sigmas, weights)
+        cap = self.seed.max_index_peaks
+        if cap is None or len(positions) <= cap:
+            return values
+        keep = (
+            intensities.topk(cap).indices
+            if intensities is not None
+            else torch.arange(cap, device=positions.device)
+        )
+        return tuple(v[keep] if v is not None else None for v in values)
+
+    def index_lattices(
         self,
-        peak_stream: Iterable[PeakResult],
-        batch_size: int = 8,
-        frame_rotations: Optional[dict[int, Tensor]] = None,
-        bright_threshold: float = 5.0,
-    ) -> IndexStream:
-        """Lazily index a peakfinder stream.
+        positions_by_frame,
+        *,
+        intensities_by_frame,
+        sigmas_by_frame,
+        weights_by_frame,
+        frame_rotations=None,
+    ):
+        """Index successive lattices by peeling explained peaks.
 
         Parameters
         ----------
-        peak_stream : iterable of PeakResult
-            Per-frame peak results from the peakfinder.
-        batch_size : int, optional
-            Frames batched into each refinement call (and the window over which
-            pixel maps are held, then released).
-        frame_rotations : dict of int -> Tensor, optional
-            Per-frame (3, 3) lab->crystal rotations.
-        bright_threshold : float, default 5.0
-            Detection threshold (whitened significance) used to score each
-            solution's predicted spots
+        positions_by_frame, intensities_by_frame, sigmas_by_frame, weights_by_frame : dict
+            Aligned peak tensors keyed by frame index.
+        frame_rotations : dict, optional
+            Per-frame lab-to-crystal rotations.
+
+        Returns
+        -------
+        dict
+            Accepted candidate lists keyed by frame index, before enrichment.
+        """
+        remaining = {
+            i: self._cap_peak_data(
+                p, intensities_by_frame[i], sigmas_by_frame[i], weights_by_frame[i]
+            )
+            for i, p in positions_by_frame.items()
+        }
+        output = {}
+        for _ in range(self.seed.max_lattices):
+            if not remaining:
+                break
+            results = self.index_frames(
+                {i: v[0] for i, v in remaining.items()},
+                frame_rotations=frame_rotations,
+                intensities_by_frame={i: v[1] for i, v in remaining.items()},
+                sigmas_by_frame={i: v[2] for i, v in remaining.items()},
+                weights_by_frame={i: v[3] for i, v in remaining.items()},
+            )
+            next_remaining = {}
+            for i, result in results.items():
+                previous = output.setdefault(i, [])
+                if any(
+                    float(
+                        torch.minimum((result.A - r.A).norm(), (result.A + r.A).norm())
+                        / r.A.norm()
+                    )
+                    < 0.02
+                    for r in previous
+                ):
+                    continue
+                previous.append(result)
+                q = self.lift(
+                    result.positions, frame_rotation=(frame_rotations or {}).get(i)
+                )
+                hkl = torch.round(q @ torch.linalg.inv(result.A).T)
+                assigned = (hkl @ result.A.T - q).norm(dim=-1) < self.seed.peel_radius
+                if int(assigned.sum()) >= 6 and int((~assigned).sum()) >= 6:
+                    next_remaining[i] = tuple(v[~assigned] for v in remaining[i])
+            remaining = next_remaining
+        return output
+
+    def index_stream(
+        self,
+        peak_stream,
+        batch_size=8,
+        frame_rotations=None,
+        bright_threshold=5.0,
+        enrich_alpha=None,
+    ) -> IndexStream:
+        """Yield individual lattices from a peak stream.
+
+        Parameters
+        ----------
+        peak_stream, batch_size, frame_rotations, bright_threshold, enrich_alpha
+            See ``index_frame_stream``.
 
         Returns
         -------
         IndexStream
-            Lazy stream of :class:`IndexResult`. When ``IntegrateConfig.enabled``
-            and the peak results carry pixel maps, each indexed frame also gets
-            its full predicted reflection list integrated from that frame's
-            excess/variance maps (a merge-ready chunk).
+            Accepted lattices with shared physical-frame statistics.
         """
+        return self.index_frame_stream(
+            peak_stream, batch_size, frame_rotations, bright_threshold, enrich_alpha
+        ).flatten()
 
+    def index_frame_stream(
+        self,
+        peak_stream,
+        batch_size=8,
+        frame_rotations=None,
+        bright_threshold=5.0,
+        enrich_alpha=None,
+    ):
+        """Index frames, selecting lattices before cross-lattice exclusion.
+
+        Parameters
+        ----------
+        peak_stream : iterable of PeakResult
+            Detected peaks and image maps.
+        batch_size : int
+            Maximum number of image maps held for batched indexing.
+        frame_rotations : dict, optional
+            Per-frame lab-to-crystal rotations.
+        bright_threshold : float
+            Calibrated significance threshold for enrichment.
+        enrich_alpha : float, optional
+            Maximum enrichment chance probability; None disables the gate.
+
+        Returns
+        -------
+        FrameIndexStream
+            One result for every input image, including unindexed images.
+        """
+        if batch_size < 1:
+            raise ValueError("batch_size must be positive")
         stats = IndexStats()
 
-        def _flush(buf: list[dict]) -> Iterator[IndexResult]:
-            results = self.index_frames(
-                {b["idx"]: b["pos"] for b in buf},
+        def flush(buf):
+            hits = [b for b in buf if len(b["pos"]) >= MIN_PEAKS_TO_INDEX]
+            results = self.index_lattices(
+                {b["idx"]: b["pos"] for b in hits},
                 frame_rotations=frame_rotations,
-                intensities_by_frame={b["idx"]: b["I"] for b in buf},
-                sigmas_by_frame={b["idx"]: b["sig"] for b in buf},
-                weights_by_frame={b["idx"]: b["w"] for b in buf},
+                intensities_by_frame={b["idx"]: b["I"] for b in hits},
+                sigmas_by_frame={b["idx"]: b["sig"] for b in hits},
+                weights_by_frame={b["idx"]: b["w"] for b in hits},
             )
             for b in buf:
-                res = results.get(b["idx"])
-                if res is None:
-                    continue
+                crystals = results.get(b["idx"], [])
                 if self.integrate.enabled and b["excess"] is not None:
-                    self._integrate_result(
-                        res,
-                        b["excess"],
-                        b["var"],
-                        b["mask"],
-                        b["mean"],
-                        bright_threshold=bright_threshold,
-                    )
-                stats.indexed += 1
-                yield res
+                    for result in crystals:
+                        self._integrate_result(
+                            result,
+                            b["excess"],
+                            b["var"],
+                            b["mask"],
+                            b["mean"],
+                            bright_threshold,
+                            enrich_alpha=enrich_alpha,
+                        )
+                if enrich_alpha is not None:
+                    crystals = [
+                        r
+                        for r in crystals
+                        if r.enrich_p is not None and r.enrich_p <= enrich_alpha
+                    ]
+                if self.integrate.radii is not None:
+                    self._exclude_overlaps(crystals)
+                stats.indexed += bool(crystals)
+                stats.crystals += len(crystals)
+                yield FrameIndexResult(b["idx"], crystals, b["pos"], b["I"])
 
-        def _gen() -> Iterator[IndexResult]:
-            buf: list[dict] = []
+        def generate():
+            buf = []
             for r in peak_stream:
                 stats.frames += 1
-                if len(r) < MIN_PEAKS_TO_INDEX:
-                    continue
-                stats.hits += 1
-                idx = r.frame_index if r.frame_index is not None else 0
+                stats.hits += len(r) >= MIN_PEAKS_TO_INDEX
                 positions, intensities, sigmas, weights = self._positions_from_frame(r)
                 buf.append(
-                    {
-                        "idx": idx,
-                        "pos": positions,
-                        "I": intensities,
-                        "sig": sigmas,
-                        "w": weights,
-                        "excess": r.scores.get("excess") if r.scores else None,
-                        "var": r.var,
-                        "mask": r.valid_mask,
-                        "mean": r.mean,
-                    }
+                    dict(
+                        idx=r.frame_index or 0,
+                        pos=positions,
+                        I=intensities,
+                        sig=sigmas,
+                        w=weights,
+                        excess=r.scores.get("excess") if r.scores else None,
+                        var=r.var,
+                        mask=r.valid_mask,
+                        mean=r.mean,
+                    )
                 )
                 if len(buf) >= batch_size:
-                    yield from _flush(buf)
+                    yield from flush(buf)
                     buf = []
             if buf:
-                yield from _flush(buf)
+                yield from flush(buf)
 
-        return IndexStream(_gen(), stats=stats)
+        return FrameIndexStream(generate(), stats=stats)
+
+    def _exclude_overlaps(self, crystals):
+        active = [r for r in crystals if hasattr(r, "_integration_positions")]
+        if not active:
+            return
+        positions = torch.cat([r._integration_positions for r in active])
+        panel = torch.zeros(len(positions), dtype=torch.long, device=positions.device)
+        for i, data in enumerate((self.geometry.get("panels") or {}).values(), 1):
+            inside = (
+                (positions[:, 0] >= data["min_ss"])
+                & (positions[:, 0] <= data["max_ss"])
+                & (positions[:, 1] >= data["min_fs"])
+                & (positions[:, 1] <= data["max_fs"])
+            )
+            panel[inside] = i
+        keep = keep_non_overlapping(positions, self.integrate.radii[0], panel)
+        offset = 0
+        for r in active:
+            count = len(r._integration_positions)
+            selected = keep[offset : offset + count][r._integration_valid]
+            for attribute in (
+                "hkl",
+                "positions",
+                "intensities",
+                "sigmas",
+                "peak",
+                "background",
+            ):
+                name = "predicted_" + attribute
+                setattr(r, name, getattr(r, name)[selected])
+            offset += count
+            del r._integration_positions, r._integration_valid
 
     def _adu_per_photon(self) -> float:
         if self.integrate.adu_per_photon is not None:
@@ -832,6 +1093,7 @@ class Indexer:
         valid_mask: Optional[Tensor],
         mean: Optional[Tensor] = None,
         bright_threshold: float = 5.0,
+        enrich_alpha: Optional[float] = None,
     ) -> None:
         # Predict the full lattice for result.A and box-integrate it.
         frame_shape = (int(excess.shape[-2]), int(excess.shape[-1]))
@@ -867,10 +1129,37 @@ class Indexer:
             centering=self.target_cell.centering,
             frame_shape=frame_shape,
         )
-        if len(pred) == 0:
+        diagnostic_positions, _ = snap_positions(
+            pred.positions.to(excess.dtype),
+            result.positions.to(excess.dtype),
+            self.integrate.snap_radius,
+        )
+        result.n_bright, result.enrichment, result.enrich_p = spot_enrichment(
+            diagnostic_positions, excess, var, bright_threshold, pixel_valid=valid_mask
+        )
+        if enrich_alpha is not None and result.enrich_p > enrich_alpha:
             return
-        # valid mask applied inside the box reduction
-        positions, intensity, sigma, _, peak, background = integrate_predicted(
+        if self.integrate.ewald_cutoff is not None:
+            pred = predict_reflections(
+                result.A.to(excess.dtype),
+                self.geometry,
+                q_max=self._q_max,
+                eta=None,
+                partiality_threshold=self.integrate.ewald_cutoff * wavelength,
+                centering=self.target_cell.centering,
+                frame_shape=frame_shape,
+            )
+        if len(pred) == 0:
+            result.predicted_hkl = pred.hkl
+            result.predicted_positions = pred.positions
+            for name in ("intensities", "sigmas", "peak", "background"):
+                setattr(result, "predicted_" + name, excess.new_empty(0))
+            return
+        integrate = (
+            integrate_predicted if self.integrate.radii is None else integrate_rings
+        )
+        extra = {} if self.integrate.radii is None else {"radii": self.integrate.radii}
+        positions, intensity, sigma, _, peak, background = integrate(
             pred.positions.to(excess.dtype),
             excess,
             var,
@@ -881,6 +1170,7 @@ class Indexer:
             pixel_valid=valid_mask,
             adu_per_photon=self._adu_per_photon(),
             n_bg=self._bg_annulus_pixels,
+            **extra,
         )
         peak_res_nm = None
         if result.positions.numel() > 0:
@@ -932,6 +1222,6 @@ class Indexer:
         result.predicted_sigmas = sigma[keep]
         result.predicted_peak = peak[keep]
         result.predicted_background = background[keep]
-        result.n_bright, result.enrichment, result.enrich_p = spot_enrichment(
-            positions, excess, var, bright_threshold, pixel_valid=valid_mask
-        )
+        if self.integrate.radii is not None:
+            result._integration_positions = positions
+            result._integration_valid = keep

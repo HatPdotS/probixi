@@ -342,3 +342,46 @@ def test_db_overwrites_existing_file(geometry_dict, cell, tmp_path):
         assert conn.execute("SELECT COUNT(*) FROM frames").fetchone()[0] == 1
     finally:
         conn.close()
+
+
+def test_multilattice_frame_identity_and_merge(geometry_dict, cell, tmp_path):
+    from probixi.indexer import FrameIndexResult
+    from probixi.io.writer import DataOffloader
+    from probixi.multigpu import merge_dbs
+
+    files = {"selection": H5Info("a.h5", "/d", 2, (8, 8), event_start=12)}
+    crystals = [_make_index_result(cell), _make_index_result(cell)]
+    frame = FrameIndexResult(
+        0, crystals, crystals[0].positions, crystals[0].intensities
+    )
+    empty = FrameIndexResult(1, [], frame.positions[:0], frame.intensities[:0])
+    path = tmp_path / "multi.duckdb"
+    with DuckDBOffloader(path, geometry_dict, files=files, multi_lattice=True) as out:
+        out.write(frame)
+        out.write(empty)
+    merged = tmp_path / "merged.duckdb"
+    assert merge_dbs([path], merged) == 1
+    with duckdb.connect(str(merged), read_only=True) as conn:
+        assert conn.execute("SELECT version FROM schema_version").fetchone() == (2,)
+        assert conn.execute(
+            "SELECT event, indexed FROM frames ORDER BY frame_index"
+        ).fetchall() == [(12, True), (13, False)]
+        assert conn.execute(
+            "SELECT count(*), count(DISTINCT crystal_id), count(DISTINCT frame_id) FROM crystals"
+        ).fetchone() == (2, 2, 1)
+        assert conn.execute(
+            "SELECT count(*) FROM reflections r JOIN crystals c USING(crystal_id) WHERE r.frame_id=c.frame_id"
+        ).fetchone() == (4,)
+        assert conn.execute("SELECT count(*) FROM peaks").fetchone() == (4,)
+    stream = tmp_path / "multi.stream"
+    with DataOffloader(stream, geometry_dict, files=files) as out:
+        out.write(frame)
+        out.write(empty)
+    text = stream.read_text()
+    assert text.count("----- Begin chunk -----") == 2
+    assert text.count("--- Begin crystal") == 2
+    assert "Event: //12" in text and "Event: //13" in text
+    assert "indexed_by = none" in text
+    with DuckDBOffloader(tmp_path / "legacy.db", geometry_dict) as out:
+        with pytest.raises(ValueError, match="schema v2"):
+            out.write(frame)
