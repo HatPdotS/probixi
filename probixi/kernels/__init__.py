@@ -1,5 +1,3 @@
-"""Optional accelerators; AUTO falls back before launch on unsupported inputs."""
-
 from contextlib import contextmanager
 from contextvars import ContextVar
 from enum import Enum
@@ -71,5 +69,6 @@ def select(name, supported):
 
 
 def tensor_key(t):
+    # Identity plus the in-place version counter
     version = object() if t.is_inference() else t._version
     return (id(t), version, t.device, t.dtype, tuple(t.shape))

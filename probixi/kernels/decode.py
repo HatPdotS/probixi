@@ -1,5 +1,3 @@
-"""nvCOMP 5.x C ABI and element-width-independent GPU inverse shuffles."""
-
 import ctypes as ct
 from functools import lru_cache
 from importlib.metadata import PackageNotFoundError, distribution

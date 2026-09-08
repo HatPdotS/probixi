@@ -1,10 +1,3 @@
-"""Accelerated FP64 fused candidate optimizer.
-
-One program owns one orientation candidate and executes all Adam steps.
-Gradients are analytic Rodrigues derivatives; HKLs are reassigned every 10
-steps just as in the reference. Supports the current confidence-weighted mode.
-"""
-
 import math
 
 import torch
@@ -87,6 +80,7 @@ def kernel(
     TOL: tl.constexpr,
     BLOCK: tl.constexpr,
 ):
+    # One program per orientation candidate, running every Adam step in-register.
     c = tl.program_id(0)
     f = tl.load(FID + c)
     i = tl.arange(0, BLOCK)

@@ -37,8 +37,7 @@ def partials(
     valid = tl.load(V + pos, j < n, other=0)
     if HAS_MASK:
         valid = valid & tl.load(M + pos, j < n, other=0)
-    x = tl.load(F + pos, j < n, other=0)
-    x = x.to(tl.float64) if FP64 else x.to(tl.float32)
+    x = tl.load(F + pos, j < n, other=0).to(tl.float32)
     value = x * valid.to(x.dtype)
     tl.store(SUMS + tile, tl.sum(value, 0))
     if COUNT:
@@ -70,8 +69,7 @@ def finish(
 
 
 class TiledPanelProjector:
-    def __init__(self, panel, block=4096, fp64=False):
-        self.fp64 = fp64
+    def __init__(self, panel, block=4096):
         self.panel = panel
         self.block = block
         ids = panel._pid_flat.detach().cpu().numpy()
@@ -91,9 +89,7 @@ class TiledPanelProjector:
         self.lengths = torch.tensor(lengths, device=device, dtype=torch.int32)
         self.ptr = torch.tensor(ptr, device=device, dtype=torch.int32)
         self.max_tiles = int(max(np.diff(ptr)))
-        self.sums = torch.empty(
-            len(starts), device=device, dtype=torch.float64 if fp64 else torch.float32
-        )
+        self.sums = torch.empty(len(starts), device=device, dtype=torch.float32)
         self.counts = torch.empty(len(starts), device=device, dtype=torch.int32)
         self.cached_counts = torch.empty(
             panel.n_panels, device=device, dtype=torch.int64
@@ -105,7 +101,7 @@ class TiledPanelProjector:
     def __call__(self, frame, mask=None):
         p = self.panel
         assert frame.is_cuda and frame.is_contiguous()
-        assert frame.dtype in (torch.float32, torch.float64)
+        assert frame.dtype == torch.float32
         assert tuple(frame.shape) == p.frame_size
         if mask is not None:
             assert (
@@ -129,7 +125,6 @@ class TiledPanelProjector:
             self.counts,
             HAS_MASK=mask is not None,
             COUNT=count,
-            FP64=self.fp64,
             BLOCK=self.block,
             enable_fp_fusion=False,
         )
@@ -140,7 +135,6 @@ class TiledPanelProjector:
             self.cached_counts,
             out,
             COUNT=count,
-            FP64=self.fp64,
             BLOCK=triton.next_power_of_2(max(1, self.max_tiles)),
             enable_fp_fusion=False,
         )

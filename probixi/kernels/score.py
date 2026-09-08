@@ -1,10 +1,3 @@
-"""Accelerated FP32 single-frame scorer with fused separable stencil passes.
-
-Retains score maps, local annulus, mask normalization, reflection padding for
-posterior smoothing, zero padding for matched filters, and three filter scales.
-Noise prediction and mask-dependent denominators use the original implementation.
-"""
-
 import math
 
 import torch
@@ -158,6 +151,7 @@ def filter_vertical(
     s1 = tl.full((B,), 0, tl.float32)
     s2 = tl.full((B,), 0, tl.float32)
     sp = tl.full((B,), 0, tl.float32)
+    # Matched filters zero-pad at the border, posterior smoothing reflects.
     for d in tl.static_range(-R2, R2 + 1):
         v = tl.load(ZM + i + d * W, (i < H * W) & (row + d >= 0) & (row + d < H), 0)
         if (d >= -R0) & (d <= R0):
@@ -207,6 +201,7 @@ def filter_horizontal(
     s1 = tl.full((B,), 0, tl.float32)
     s2 = tl.full((B,), 0, tl.float32)
     sp = tl.full((B,), 0, tl.float32)
+    # Matched filters zero-pad at the border, posterior smoothing reflects.
     for d in tl.static_range(-R2, R2 + 1):
         valid = (i < H * W) & (col + d >= 0) & (col + d < W)
         if (d >= -R0) & (d <= R0):
