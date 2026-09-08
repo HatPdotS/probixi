@@ -43,3 +43,25 @@ def geometry(geom_file: Path) -> Geometry:
 def geometry_dict(geometry: Geometry) -> dict:
     """Indexer/writer-style geometry dict (beam_center, clen, pixel_size, ...)."""
     return geometry.to_dict()
+
+
+# torch's MPS matmul path (mpp::tensor_ops::matmul2d) fails to compile on some
+# Metal builds. That is a backend capability gap, not a Probixi failure, so
+# report it as a skip -- but only for that specific shader-compile error.
+_METAL_COMPILE_MARKERS = (
+    "Failed to created pipeline state object",
+    "Domain=CompilerError",
+)
+
+
+@pytest.hookimpl(wrapper=True)
+def pytest_runtest_call(item):
+    try:
+        return (yield)
+    except RuntimeError as exc:
+        text = str(exc)
+        if "mps" in item.keywords and any(m in text for m in _METAL_COMPILE_MARKERS):
+            pytest.skip(
+                f"MPS shader compilation unsupported by this Metal build: {text[:120]}"
+            )
+        raise
