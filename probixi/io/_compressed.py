@@ -1,5 +1,3 @@
-"""Metadata-driven raw HDF5 input; unsupported layouts retain HDF5 semantics."""
-
 import queue
 import struct
 import threading
