@@ -1,11 +1,3 @@
-"""Accelerated tiled panel mean, preserving the existing panel map and masks.
-
-Finite CUDA float32/float64 frames; fixed panel layout. Mask counts are cached
-using tensor identity and PyTorch's in-place version counter. Tree reductions
-avoid long FP32 atomic accumulation chains. FP32 is the default; FP64 is an
-optional accuracy reference.
-"""
-
 from itertools import pairwise
 
 import numpy as np
@@ -16,6 +8,7 @@ import triton.language as tl
 from . import tensor_key
 
 
+# Per-tile partial sums, then a per-panel tree reduction
 @triton.jit
 def partials(
     F,
@@ -27,7 +20,6 @@ def partials(
     COUNTS,
     HAS_MASK: tl.constexpr,
     COUNT: tl.constexpr,
-    FP64: tl.constexpr,
     BLOCK: tl.constexpr,
 ):
     tile = tl.program_id(0)
@@ -52,7 +44,6 @@ def finish(
     CACHE,
     OUT,
     COUNT: tl.constexpr,
-    FP64: tl.constexpr,
     BLOCK: tl.constexpr,
 ):
     panel = tl.program_id(0)
@@ -109,6 +100,7 @@ class TiledPanelProjector:
                 and mask.is_contiguous()
                 and mask.device == frame.device
             )
+        # Mask counts are reused until either mask is replaced or mutated.
         key = (
             tensor_key(p.valid_mask),
             tensor_key(mask) if mask is not None else None,
