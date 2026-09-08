@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "probixi"
-version = "0.3.1"
+version = "0.4.0"
 description = "Self-Calibrating Probabilistic Peak Finding for Serial X-Ray Crystallographic Data"
 readme = "README.md"
 license = { text = "MIT" }
@@ -24,7 +24,10 @@ classifiers = [
 ]
 
 authors = [
-    {name = "Ryan O'Dea", email = "ryan.odea@psi.ch"}
+    {name = "Ryan O'Dea", email = "ryan.odea@psi.ch"},
+    {name = "Peter Seidel", email = "hans.seidel@psi.ch"},
+    {name = "Michal Kepa", email = "michal.kepa@epfl.ch"},
+    {name = "Tobias Weinert", email = "tobias.weinert@psi.ch"}
 ]
 maintainers = [
     {name = "Ryan O'Dea", email = "ryan.odea@psi.ch"}
@@ -45,7 +48,7 @@ dependencies = [
 probixi = "probixi.cli:main"
 
 [project.optional-dependencies]
-gpu = ["triton>=3.5,<4", "nvidia-libnvcomp-cu12==5.3.0.16"]
+gpu = ["triton>=3.5", "nvidia-libnvcomp-cu12==5.3.0.16"]
 docs = [
     "myst-parser",
     "piccolo_theme",
