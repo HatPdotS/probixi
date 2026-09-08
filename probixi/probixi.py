@@ -26,6 +26,7 @@ from .io import (
     read_mask,
     render_frame,
 )
+from .kernels import Engine, use_engine
 from .peakfinding import PeakFinder, PeakStream
 from .peakfinding.noise import (
     CalibrationResult,
@@ -56,7 +57,7 @@ _CITATION = r"""
 @software{odea_probixi,
   author  = {O'Dea, Ryan and Weinert, Tobias},
   title   = {{probixi}: Self-Calibrating Probabilistic Peak Finding for Serial X-Ray Crystallographic Data},
-  version = {0.3.1},
+  version = {0.4.0},
   year    = {2026},
   url     = {https://github.com/ryan-odea/probixi}
 }
@@ -576,6 +577,7 @@ class Probixi:
             chain([first], it), path, batch_size=batch_size, **kwargs
         )
 
+    @use_engine(Engine.REFERENCE)
     def calibrate(
         self,
         n_seed: int = 32,

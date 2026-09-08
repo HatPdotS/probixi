@@ -3,6 +3,7 @@ from typing import Literal, Optional, Sequence, Tuple, Union
 import torch
 from torch import Tensor
 
+from ...kernels import select, tensor_key
 from .model import NoiseStats
 
 PanelSpec = Union[
@@ -75,6 +76,36 @@ class PanelNoise(NoiseStats):
 
     def _project(self, frame: Tensor, mask: Optional[Tensor]) -> Tensor:
         # Mean over each panel's valid pixels: xbar_p = sum_p mask*x / sum_p mask.
+        supported = (
+            self.n_panels > 0
+            and frame.is_cuda
+            and frame.is_contiguous()
+            and not frame.requires_grad
+            and frame.dtype == torch.float32
+            and frame.dtype == self.mean_.dtype
+            and frame.device == self.mean_.device
+            and (
+                mask is None
+                or (
+                    mask.is_contiguous()
+                    and mask.dtype == torch.bool
+                    and mask.device == frame.device
+                )
+            )
+        )
+        kernel = select("panel", supported)
+        if kernel is not None:
+            key = (
+                tensor_key(self._pid_flat),
+                tensor_key(self.valid_mask),
+                self.n_panels,
+                self.mean_.dtype,
+                self.mean_.device,
+            )
+            if getattr(self, "_kernel_key", None) != key:
+                self._kernel_project = kernel.TiledPanelProjector(self)
+                self._kernel_key = key
+            return self._kernel_project(frame, mask)
         valid = self.valid_mask
         if mask is not None:
             valid = valid & mask.to(device=valid.device, dtype=torch.bool)

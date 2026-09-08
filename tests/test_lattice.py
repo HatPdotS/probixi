@@ -8,7 +8,7 @@ import torch
 from probixi.indexer.lattice import B_to_cell, cell_to_B, decompose_A
 from probixi.io import CellParams
 
-DT = torch.float64
+DT = torch.float32
 
 CUBIC = CellParams(10.0, 10.0, 10.0, math.pi / 2, math.pi / 2, math.pi / 2)
 ORTHO = CellParams(10.0, 20.0, 30.0, math.pi / 2, math.pi / 2, math.pi / 2)
@@ -28,7 +28,7 @@ def proper_rotation(seed: int) -> torch.Tensor:
 def test_cell_to_B_orthorhombic_is_diagonal():
     B = cell_to_B(ORTHO, dtype=DT)
     expected = torch.diag(torch.tensor([0.1, 0.05, 1.0 / 30.0], dtype=DT))
-    assert torch.allclose(B, expected, atol=1e-12)
+    assert torch.allclose(B, expected, atol=1e-6)
 
 
 def test_q_of_h00_has_magnitude_one_over_a():
@@ -42,12 +42,12 @@ def test_q_of_h00_has_magnitude_one_over_a():
 )
 def test_B_to_cell_recovers_parameters(cell):
     recovered = B_to_cell(cell_to_B(cell, dtype=DT))
-    assert recovered.a == pytest.approx(cell.a, rel=1e-9)
-    assert recovered.b == pytest.approx(cell.b, rel=1e-9)
-    assert recovered.c == pytest.approx(cell.c, rel=1e-9)
-    assert recovered.alpha == pytest.approx(cell.alpha, abs=1e-9)
-    assert recovered.beta == pytest.approx(cell.beta, abs=1e-9)
-    assert recovered.gamma == pytest.approx(cell.gamma, abs=1e-9)
+    assert recovered.a == pytest.approx(cell.a, rel=1e-6)
+    assert recovered.b == pytest.approx(cell.b, rel=1e-6)
+    assert recovered.c == pytest.approx(cell.c, rel=1e-6)
+    assert recovered.alpha == pytest.approx(cell.alpha, abs=1e-6)
+    assert recovered.beta == pytest.approx(cell.beta, abs=1e-6)
+    assert recovered.gamma == pytest.approx(cell.gamma, abs=1e-6)
 
 
 def test_cell_to_B_rejects_zero_gamma():
@@ -70,8 +70,8 @@ def test_B_to_cell_rejects_bad_shape():
 def test_decompose_A_returns_proper_rotation():
     A = proper_rotation(0) @ cell_to_B(ORTHO, dtype=DT)
     U, _, _ = decompose_A(A)
-    assert torch.allclose(U @ U.transpose(-1, -2), torch.eye(3, dtype=DT), atol=1e-10)
-    assert float(torch.linalg.det(U)) == pytest.approx(1.0, abs=1e-10)
+    assert torch.allclose(U @ U.transpose(-1, -2), torch.eye(3, dtype=DT), atol=1e-6)
+    assert float(torch.linalg.det(U)) == pytest.approx(1.0, abs=1e-6)
 
 
 def test_decompose_A_recovers_cell_metric():
@@ -90,4 +90,4 @@ def test_decompose_A_recovers_cell_metric():
 def test_decompose_A_preserves_cell_volume():
     A = proper_rotation(3) @ cell_to_B(HEX, dtype=DT)
     _, _, cell = decompose_A(A)
-    assert cell.volume == pytest.approx(HEX.volume, rel=1e-9)
+    assert cell.volume == pytest.approx(HEX.volume, rel=1e-6)

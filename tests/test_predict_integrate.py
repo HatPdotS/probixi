@@ -24,7 +24,7 @@ def _orientation() -> torch.Tensor:
 
 def _A(cell) -> torch.Tensor:
     U = _orientation()
-    B = cell_to_B(cell, dtype=torch.float64)
+    B = cell_to_B(cell, dtype=torch.float32)
     return U @ B
 
 
@@ -49,7 +49,7 @@ def test_predicted_hkl_are_integers(cell):
     pred = predict_reflections(A, geom, detector_q_max(geom, SHAPE))
     assert len(pred) > 0
     assert pred.hkl.dtype == torch.int64
-    hkl_f = pred.hkl.to(torch.float64)
+    hkl_f = pred.hkl.to(torch.float32)
     assert torch.equal(hkl_f, torch.round(hkl_f))
 
 
@@ -57,7 +57,7 @@ def test_predicted_q_equals_A_times_hkl(cell):
     geom = _synthetic_geometry()
     A = _A(cell)
     pred = predict_reflections(A, geom, detector_q_max(geom, SHAPE))
-    q_from_hkl = pred.hkl.to(torch.float64) @ A.transpose(-1, -2)
+    q_from_hkl = pred.hkl.to(torch.float32) @ A.transpose(-1, -2)
     assert torch.allclose(pred.q, q_from_hkl)
 
 
@@ -108,7 +108,7 @@ def test_off_frame_reflections_are_filtered_when_frame_shape_given(cell):
 def test_predict_rejects_non_3x3_A(cell):
     geom = _synthetic_geometry()
     with pytest.raises(ValueError):
-        predict_reflections(torch.eye(2, dtype=torch.float64), geom, 1.0)
+        predict_reflections(torch.eye(2, dtype=torch.float32), geom, 1.0)
 
 
 def test_integrate_recovers_injected_intensity_and_background(cell):
@@ -119,7 +119,7 @@ def test_integrate_recovers_injected_intensity_and_background(cell):
     truth_I = 5000.0
     background = 100.0
     noise_sigma = 10.0
-    intensities = torch.full((n,), truth_I, dtype=torch.float64)
+    intensities = torch.full((n,), truth_I, dtype=torch.float32)
     frame = sim.render_frame(
         SHAPE,
         lattice_pos.numpy(),
@@ -128,23 +128,23 @@ def test_integrate_recovers_injected_intensity_and_background(cell):
         noise_sigma=noise_sigma,
         seed=1,
     )
-    fr = torch.from_numpy(frame).to(torch.float64)
+    fr = torch.from_numpy(frame).to(torch.float32)
     excess = fr - background  # background-subtracted excess map
-    var = torch.full(SHAPE, noise_sigma**2, dtype=torch.float64)
-    mean = torch.full(SHAPE, background, dtype=torch.float64)
+    var = torch.full(SHAPE, noise_sigma**2, dtype=torch.float32)
+    mean = torch.full(SHAPE, background, dtype=torch.float32)
 
     positions, intensity, sigma, snapped, peak, bg = integrate_predicted(
         lattice_pos,
         excess,
         var,
-        obs_positions=torch.empty(0, 2, dtype=torch.float64),
+        obs_positions=torch.empty(0, 2, dtype=torch.float32),
         box_radius=4,
         mean=mean,
     )
     # box sum recovers the bulk of each spot's total counts
     assert abs(float(intensity.median()) - truth_I) < 0.1 * truth_I
     # background reported is the injected mean
-    assert torch.allclose(bg, torch.full((n,), background, dtype=torch.float64))
+    assert torch.allclose(bg, torch.full((n,), background, dtype=torch.float32))
     # box sigma combines the summed per-pixel background variance with the
     # signal's own shot noise (adu_per_photon defaults to 1.0); for spots whose
     # full box lies inside the frame the count is the complete (2r+1)^2 box
@@ -169,8 +169,8 @@ def test_integrate_snaps_predicted_to_nearby_observed_peak(cell):
     lattice_pos, _ = sim.lattice_peaks(geom, cell, _orientation())
     n = lattice_pos.shape[0]
     assert n > 0
-    excess = torch.zeros(SHAPE, dtype=torch.float64)
-    var = torch.ones(SHAPE, dtype=torch.float64)
+    excess = torch.zeros(SHAPE, dtype=torch.float32)
+    var = torch.ones(SHAPE, dtype=torch.float32)
     # predicted positions are offset; observed peaks sit on the true lattice
     pred_pos = lattice_pos + 0.4
     obs_pos = lattice_pos
@@ -189,10 +189,10 @@ def test_integrate_snaps_predicted_to_nearby_observed_peak(cell):
 
 def test_integrate_does_not_snap_observed_peak_outside_snap_radius():
     shape = (64, 64)
-    excess = torch.zeros(shape, dtype=torch.float64)
-    var = torch.ones(shape, dtype=torch.float64)
-    pred_pos = torch.tensor([[20.0, 20.0]], dtype=torch.float64)
-    obs_pos = torch.tensor([[40.0, 40.0]], dtype=torch.float64)
+    excess = torch.zeros(shape, dtype=torch.float32)
+    var = torch.ones(shape, dtype=torch.float32)
+    pred_pos = torch.tensor([[20.0, 20.0]], dtype=torch.float32)
+    obs_pos = torch.tensor([[40.0, 40.0]], dtype=torch.float32)
     positions, intensity, sigma, snapped, peak, bg = integrate_predicted(
         pred_pos,
         excess,
@@ -208,14 +208,14 @@ def test_integrate_does_not_snap_observed_peak_outside_snap_radius():
 
 def test_integrate_with_no_observed_peaks_keeps_predicted_positions():
     shape = (64, 64)
-    excess = torch.zeros(shape, dtype=torch.float64)
-    var = torch.ones(shape, dtype=torch.float64)
-    pred_pos = torch.tensor([[10.0, 12.0], [30.0, 40.0]], dtype=torch.float64)
+    excess = torch.zeros(shape, dtype=torch.float32)
+    var = torch.ones(shape, dtype=torch.float32)
+    pred_pos = torch.tensor([[10.0, 12.0], [30.0, 40.0]], dtype=torch.float32)
     positions, intensity, sigma, snapped, peak, bg = integrate_predicted(
         pred_pos,
         excess,
         var,
-        obs_positions=torch.empty(0, 2, dtype=torch.float64),
+        obs_positions=torch.empty(0, 2, dtype=torch.float32),
         box_radius=2,
     )
     assert not bool(snapped.any())
@@ -226,12 +226,12 @@ def test_integrate_boxes_deblend_owns_shared_pixel_by_nearest_then_lowest_index(
     # M>1 nearest-owner deblend: a pixel in the overlap of two boxes is assigned to
     # exactly one centre (nearest, ties broken by lowest index), never double-counted.
     shape = (48, 48)
-    positions = torch.tensor([[24.0, 22.0], [24.0, 26.0]], dtype=torch.float64)
-    excess = torch.zeros(shape, dtype=torch.float64)
+    positions = torch.tensor([[24.0, 22.0], [24.0, 26.0]], dtype=torch.float32)
+    excess = torch.zeros(shape, dtype=torch.float32)
     excess[24, 22] = 100.0  # only in box 0
     excess[24, 26] = 80.0  # only in box 1
     excess[24, 24] = 30.0  # equidistant (d=2) -> tie -> lowest index (box 0)
-    var = torch.ones(shape, dtype=torch.float64)
+    var = torch.ones(shape, dtype=torch.float32)
     inten, sigma, peak, bg = integrate_boxes(excess, var, positions, radius=3)
     # shared pixel counted once, in box 0; total conserved (no double-count)
     assert float(inten[0]) == pytest.approx(130.0)
@@ -267,15 +267,15 @@ def test_integrate_boxes_deblend_runs_on_mps_and_matches_cpu():
 
 def test_integrate_peak_is_box_maximum_of_excess():
     shape = (32, 32)
-    excess = torch.zeros(shape, dtype=torch.float64)
+    excess = torch.zeros(shape, dtype=torch.float32)
     excess[16, 16] = 42.0
-    var = torch.ones(shape, dtype=torch.float64)
-    pred_pos = torch.tensor([[16.0, 16.0]], dtype=torch.float64)
+    var = torch.ones(shape, dtype=torch.float32)
+    pred_pos = torch.tensor([[16.0, 16.0]], dtype=torch.float32)
     positions, intensity, sigma, snapped, peak, bg = integrate_predicted(
         pred_pos,
         excess,
         var,
-        obs_positions=torch.empty(0, 2, dtype=torch.float64),
+        obs_positions=torch.empty(0, 2, dtype=torch.float32),
         box_radius=2,
     )
     assert float(peak[0]) == pytest.approx(42.0)

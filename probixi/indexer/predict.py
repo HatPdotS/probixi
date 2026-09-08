@@ -155,7 +155,7 @@ def detector_q_max(geometry: dict, frame_shape: tuple[int, int]) -> float:
     rows, cols = frame_shape
     corners = torch.tensor(
         [[0.0, 0.0], [0.0, cols - 1], [rows - 1, 0.0], [rows - 1, cols - 1]],
-        dtype=torch.float64,
+        dtype=torch.float32,
     )
-    q = detector_to_q(corners, geometry, dtype=torch.float64)
+    q = detector_to_q(corners, geometry)
     return float(torch.linalg.vector_norm(q, dim=-1).max())

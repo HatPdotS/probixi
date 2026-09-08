@@ -137,10 +137,10 @@ def render_frame(
     """
     H, W = int(shape[0]), int(shape[1])
     rng = np.random.Generator(np.random.PCG64(int(seed)))
-    frame = rng.normal(background, noise_sigma, size=(H, W)).astype(np.float64)
+    frame = rng.normal(background, noise_sigma, size=(H, W)).astype(np.float32)
 
-    pos = np.asarray(positions, dtype=np.float64).reshape(-1, 2)
-    inten = np.asarray(intensities, dtype=np.float64).reshape(-1)
+    pos = np.asarray(positions, dtype=np.float32).reshape(-1, 2)
+    inten = np.asarray(intensities, dtype=np.float32).reshape(-1)
     if pos.shape[0] != inten.shape[0]:
         raise ValueError("positions and intensities must have equal length")
 
@@ -153,8 +153,8 @@ def render_frame(
         clo, chi = max(0, ci - radius), min(W, ci + radius + 1)
         if rlo >= rhi or clo >= chi:
             continue
-        rr = np.arange(rlo, rhi, dtype=np.float64)[:, None]
-        cc = np.arange(clo, chi, dtype=np.float64)[None, :]
+        rr = np.arange(rlo, rhi, dtype=np.float32)[:, None]
+        cc = np.arange(clo, chi, dtype=np.float32)[None, :]
         g = np.exp(-((rr - r0) ** 2 + (cc - c0) ** 2) / two_s2)
         s = g.sum()
         if s <= 0:
@@ -209,9 +209,9 @@ def lattice_peaks(
     Returns
     -------
     tuple[Tensor, Tensor]
-        ``(positions (N, 2) float64 (row, col), hkl (N, 3) float64 integer)``.
+        ``(positions (N, 2) float32 (row, col), hkl (N, 3) float32 integer)``.
     """
-    dtype = torch.float64
+    dtype = torch.float32
     B = cell_to_B(cell, dtype=dtype)
     Um = U.to(dtype=dtype)
     A = Um @ B  # q = A @ hkl ; columns of A map hkl -> q
@@ -267,7 +267,7 @@ def simulate_indexable_frame(
     W = int(panel["max_fs"]) + 1
     positions, hkl = lattice_peaks(geometry_dict, cell, U)
     intensities = torch.full(
-        (positions.shape[0],), float(peak_intensity), dtype=torch.float64
+        (positions.shape[0],), float(peak_intensity), dtype=torch.float32
     )
     frame = render_frame(
         (H, W),
@@ -282,7 +282,7 @@ def simulate_indexable_frame(
         positions=positions,
         intensities=intensities,
         hkl=hkl,
-        U=U.to(dtype=torch.float64),
+        U=U.to(dtype=torch.float32),
         cell=cell,
         background=float(background),
         noise_sigma=float(noise_sigma),
@@ -457,7 +457,7 @@ def write_external_mask(
 
 
 def proper_rotation(seed: int, max_angle_deg: Optional[float] = None) -> Tensor:
-    """Deterministic proper rotation (``det == +1``), (3, 3) float64.
+    """Deterministic proper rotation (``det == +1``), (3, 3) float32.
 
     With ``max_angle_deg`` given, the rotation is a small axis-angle perturbation
     of the identity (angle drawn in ``(0, max_angle_deg]``), so coarse orientation
@@ -473,28 +473,28 @@ def proper_rotation(seed: int, max_angle_deg: Optional[float] = None) -> Tensor:
     Returns
     -------
     Tensor
-        (3, 3) float64 rotation matrix.
+        (3, 3) float32 rotation matrix.
     """
     g = torch.Generator()
     g.manual_seed(int(seed))
-    axis = torch.randn(3, generator=g, dtype=torch.float64)
+    axis = torch.randn(3, generator=g, dtype=torch.float32)
     axis = axis / torch.linalg.vector_norm(axis).clamp_min(1e-12)
     if max_angle_deg is not None:
-        frac = torch.rand(1, generator=g, dtype=torch.float64).item()
+        frac = torch.rand(1, generator=g, dtype=torch.float32).item()
         angle = math.radians(float(max_angle_deg)) * (0.25 + 0.75 * frac)
     else:
-        angle = float(torch.rand(1, generator=g, dtype=torch.float64).item()) * (
+        angle = float(torch.rand(1, generator=g, dtype=torch.float32).item()) * (
             2.0 * math.pi
         )
     omega = axis * angle
     theta = angle
-    eye = torch.eye(3, dtype=torch.float64)
+    eye = torch.eye(3, dtype=torch.float32)
     if theta < 1e-12:
         return eye
     axis_hat = omega / theta
     xh, yh, zh = axis_hat.tolist()
     Kh = torch.tensor(
-        [[0.0, -zh, yh], [zh, 0.0, -xh], [-yh, xh, 0.0]], dtype=torch.float64
+        [[0.0, -zh, yh], [zh, 0.0, -xh], [-yh, xh, 0.0]], dtype=torch.float32
     )
     R = eye + math.sin(theta) * Kh + (1.0 - math.cos(theta)) * (Kh @ Kh)
     return R
@@ -567,7 +567,7 @@ if __name__ == "__main__":
     finder = PeakFinder(pnm, size_max=80)
     pcal.apply(pnm, finder)
     pks = finder.peak_stream([torch.from_numpy(pframe)]).collect_peaks()
-    det = torch.tensor([[p.row, p.col] for p in pks], dtype=torch.float64)
+    det = torch.tensor([[p.row, p.col] for p in pks], dtype=torch.float32)
     matched = 0
     for tp in ppos:
         if det.shape[0]:

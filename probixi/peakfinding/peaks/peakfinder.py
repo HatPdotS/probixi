@@ -8,6 +8,7 @@ from typing import Callable, Iterable, Iterator, Literal, Optional
 import torch
 from torch import Tensor
 
+from ...kernels import select, tensor_key
 from ..noise.model import NoiseModel
 from .blobs import (
     BlobStats,
@@ -464,6 +465,30 @@ class PeakFinder:
             ``mean_eff``, ``var_eff``, and ``mf_max`` when the matched filter is
             enabled. Each is (H,W).
         """
+        supported = (
+            frame.is_cuda
+            and frame.dtype == torch.float32
+            and frame.ndim == 2
+            and frame.is_contiguous()
+            and not frame.requires_grad
+            and self.noise.pixel.mean_.dtype == torch.float32
+            and frame.device == self.noise.pixel.mean_.device
+            and self.local_background
+            and self.matched_filter
+            and 1 <= self.local_inner_radius < self.local_outer_radius
+            and len(self._mf_kernels) == 3
+            and [k.shape[0] for k in self._mf_kernels]
+            == sorted(k.shape[0] for k in self._mf_kernels)
+            and self.noise.eigen_modes is None
+            and min(frame.shape) > self._kernel.shape[-1] // 2
+        )
+        kernel = select("score", supported)
+        if kernel is not None:
+            key = tuple(tensor_key(k) for k in [self._kernel, *self._mf_kernels])
+            if getattr(self, "_kernel_key", None) != key:
+                self._kernel_score = kernel.FusedScorer(self)
+                self._kernel_key = key
+            return self._kernel_score(frame)
         pred = self._pred()
         frame = frame.to(pred["mean"])
         mean, var = self._effective_background(frame, pred)

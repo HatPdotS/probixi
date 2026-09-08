@@ -11,7 +11,7 @@ from probixi.peakfinding.noise.calibrate import (
 )
 from probixi.peakfinding.noise.model import NoiseModel
 
-DTYPE = torch.float64
+DTYPE = torch.float32
 
 
 def _frames(shape, n, *, background=100.0, noise_sigma=10.0, seed=0):
@@ -143,13 +143,13 @@ def test_fit_photon_transfer_recovers_positive_gain():
     # poisson-like data: mean varies across pixels and var ~ read_var + gain*mean.
     rng = np.random.Generator(np.random.PCG64(11))
     read_sigma, gain = 3.0, 2.0
-    levels = rng.uniform(20.0, 400.0, size=shape).astype(np.float64)
+    levels = rng.uniform(20.0, 400.0, size=shape).astype(np.float32)
     n = 32
     frames = []
     for i in range(n):
         sub = np.random.Generator(np.random.PCG64(100 + i))
         var = read_sigma**2 + gain * levels
-        f = sub.normal(levels, np.sqrt(var)).astype(np.float64)
+        f = sub.normal(levels, np.sqrt(var)).astype(np.float32)
         frames.append(torch.from_numpy(f).to(DTYPE))
 
     nm = NoiseModel(shape, mode="online", robust_update=False, dtype=DTYPE)

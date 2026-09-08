@@ -469,7 +469,6 @@ class NoiseModel(nn.Module):
         ms, vr, klv, nm = (
             torch.stack([mean_shift, var_ratio, kl, n_masked_t.to(mean_shift.dtype)])
             .cpu()
-            .to(torch.float64)
             .tolist()
         )
         self.drift.step.append(step)

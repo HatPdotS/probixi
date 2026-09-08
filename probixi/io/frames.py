@@ -267,6 +267,8 @@ def _prefetch_worker(
                 break
         if buf and not stop.is_set():
             _put(_emit(buf))
+    except Exception as exc:  # noqa: BLE001 -- forward worker failures to the consumer
+        _put(exc)
     finally:
         _put(_PREFETCH_SENTINEL)
 
@@ -285,9 +287,13 @@ def iter_frames(
 ) -> Iterator[Tensor]:
     """Stream frames from a loader as tensors, prefetching reads off-thread.
 
-    A background worker reads HDF5 slices into a bounded queue (up to ``prefetch``
-    batches ahead) so disk I/O overlaps compute. Bitshuffle-LZ4 chunked datasets
-    are read raw and decoded across a ``decode_workers`` thread pool.
+    A background worker reads into a bounded queue to overlap IO and compute.
+    When CUDA, Triton and nvCOMP are available, supported full-frame chunks are
+    transferred compressed and decoded on device, including simple whole-frame
+    VDS mappings. Other formats retain HDF5 decoding. GPU input uses internal
+    batches of eight without changing the yielded batch shape. The reference
+    path optionally decodes bitshuffle/LZ4 across ``decode_workers`` threads.
+    Use ``probixi.kernels.use_engine`` to force a backend for comparisons.
 
     Parameters
     ----------
@@ -320,6 +326,31 @@ def iter_frames(
     lo = int(start) if start is not None else 0
     hi = int(stop) if stop is not None else metadata.n_frames
 
+    from ..kernels import Engine, _engine, select
+
+    device = torch.device(device) if device is not None else None
+    kernel = select("decode", device is not None and device.type == "cuda")
+    if kernel is not None:
+        if kernel.library() is not None:
+            from ._compressed import iter_gpu_frames
+
+            with torch.cuda.device(device):
+                yield from iter_gpu_frames(
+                    loader,
+                    chosen,
+                    lo,
+                    hi,
+                    device,
+                    dtype,
+                    batch_size,
+                    prefetch,
+                    kernel,
+                    _engine.get() is Engine.ACCELERATED,
+                )
+            return
+        if _engine.get() is Engine.ACCELERATED:
+            raise RuntimeError("nvCOMP 5.x CUDA library is unavailable")
+
     nworkers = max(1, min(int(decode_workers), os.cpu_count() or 4))
     window = max(int(batch_size), nworkers)
     pool = ThreadPoolExecutor(max_workers=nworkers)
@@ -338,6 +369,8 @@ def iter_frames(
             item = q.get()
             if item is _PREFETCH_SENTINEL:
                 break
+            if isinstance(item, Exception):
+                raise item
             t = item
             if device is not None:
                 t = t.to(device, non_blocking=True)

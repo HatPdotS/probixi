@@ -17,24 +17,13 @@ from .integrate import (
     peak_resolution_limit,
     spot_enrichment,
 )
-from .lattice import cell_to_B, decompose_A
+from .lattice import B_to_cell, cell_to_B
 from .predict import detector_q_max, predict_reflections
 from .refine import RefineResult, refine_multiframe_known_B
 from .rocking import estimate_mosaicity
 from .seed import sphere_seed_candidates
 
 MIN_PEAKS_TO_INDEX = 5
-
-
-def _resolve_lattice_dtype(
-    device: Optional[torch.device], dtype: Optional[torch.dtype]
-) -> torch.dtype:
-    # float64 on cpu/cuda, float32 on mps (no float64); explicit dtype wins
-    if dtype is not None:
-        return dtype
-    if device is not None and torch.device(device).type == "mps":
-        return torch.float32
-    return torch.float64
 
 
 @dataclass
@@ -467,8 +456,7 @@ class Indexer:
     integrate : IntegrateConfig, optional
         Reflection prediction/integration settings (streaming path).
     dtype : torch.dtype, optional
-        Lattice-math dtype. Default is device-aware: ``torch.float64`` on
-        CPU/CUDA, ``torch.float32`` on MPS (which has no float64 support).
+        Lattice-math dtype, ``torch.float32`` by default.
     device : torch.device, optional
         Device for all tensors.
     """
@@ -495,7 +483,7 @@ class Indexer:
         self.refine = refine or RefineConfig()
         self.cell_match = cell_match or CellMatchConfig()
         self.integrate = integrate or IntegrateConfig()
-        self.dtype = _resolve_lattice_dtype(device, dtype)
+        self.dtype = dtype if dtype is not None else torch.float32
         self.device = device
         self._geometry_gain = geometry.get("adu_per_photon")
         self._measured_gain: Optional[float] = None
@@ -702,7 +690,9 @@ class Indexer:
                 continue
             A_cand = result.A[cand]
             try:
-                U, B, cell = decompose_A(A_cand)
+                cell = B_to_cell(A_cand)
+                B = cell_to_B(cell, device=A_cand.device, dtype=A_cand.dtype)
+                U = A_cand @ torch.linalg.inv(B)
             except Exception:
                 continue
             if not self._cell_matches_target(cell):

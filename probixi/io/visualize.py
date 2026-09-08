@@ -71,7 +71,7 @@ def render_frame(
     Path
         The written image path.
     """
-    img = _to_numpy(image).astype(np.float64)
+    img = _to_numpy(image).astype(np.float32)
     valid = _to_numpy(mask).astype(bool) if mask is not None else np.isfinite(img)
     finite = img[valid & np.isfinite(img)]
     if finite.size:
