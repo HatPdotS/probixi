@@ -18,16 +18,16 @@ def _make_index_result(cell, frame_index: int = 0) -> IndexResult:
     # three indexed peaks, one un-indexed: the crystal block keeps only the three
     positions = torch.tensor(
         [[40.0, 55.0], [70.0, 30.0], [90.0, 110.0], [10.0, 12.0]],
-        dtype=torch.float64,
+        dtype=torch.float32,
     )
-    intensities = torch.tensor([1200.0, 800.0, 450.0, 50.0], dtype=torch.float64)
+    intensities = torch.tensor([1200.0, 800.0, 450.0, 50.0], dtype=torch.float32)
     # last indexed peak carries sigma <= 0 -> must be dropped from reflections
-    sigmas = torch.tensor([35.0, 28.0, 0.0, 7.0], dtype=torch.float64)
+    sigmas = torch.tensor([35.0, 28.0, 0.0, 7.0], dtype=torch.float32)
     indexed_mask = torch.tensor([True, True, True, False])
     hkl = torch.tensor([[1, 0, 0], [0, 1, -1], [2, -1, 3], [0, 0, 0]], dtype=torch.long)
     A = torch.tensor(
         [[0.016, 0.001, 0.000], [0.000, 0.016, 0.002], [0.001, 0.000, 0.009]],
-        dtype=torch.float64,
+        dtype=torch.float32,
     )
     return IndexResult(
         frame_index=frame_index,
@@ -35,7 +35,7 @@ def _make_index_result(cell, frame_index: int = 0) -> IndexResult:
         n_indexed=3,
         rmsd=0.0042,
         A=A,
-        U=torch.eye(3, dtype=torch.float64),
+        U=torch.eye(3, dtype=torch.float32),
         B=A.clone(),
         cell=cell,
         indexed_mask=indexed_mask,
@@ -43,7 +43,7 @@ def _make_index_result(cell, frame_index: int = 0) -> IndexResult:
         positions=positions,
         intensities=intensities,
         sigmas=sigmas,
-        loss_history=torch.zeros(1, dtype=torch.float64),
+        loss_history=torch.zeros(1, dtype=torch.float32),
         scale=0.97,
         scale_sigma=0.01,
     )
@@ -53,12 +53,12 @@ def _make_peak_result(frame_index: int = 0):
     from probixi.peakfinding.peaks.blobs import BlobStats
     from probixi.peakfinding.peaks.peakfinder import PeakResult
 
-    rows = torch.tensor([40.0, 70.0, 90.0], dtype=torch.float64)
-    cols = torch.tensor([55.0, 30.0, 110.0], dtype=torch.float64)
-    isum = torch.tensor([1200.0, 800.0, 450.0], dtype=torch.float64)
+    rows = torch.tensor([40.0, 70.0, 90.0], dtype=torch.float32)
+    cols = torch.tensor([55.0, 30.0, 110.0], dtype=torch.float32)
+    isum = torch.tensor([1200.0, 800.0, 450.0], dtype=torch.float32)
     n = rows.numel()
     el = torch.arange(1, n + 1, dtype=torch.long)
-    z = torch.zeros(n, dtype=torch.float64)
+    z = torch.zeros(n, dtype=torch.float32)
     stats = BlobStats(
         label_id=el,
         size=torch.full((n,), 9, dtype=torch.long),

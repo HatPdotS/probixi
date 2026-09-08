@@ -7,7 +7,7 @@ import torch
 
 from probixi.indexer.forward import detector_to_q, q_to_detector
 
-DT = torch.float64
+DT = torch.float32
 
 
 def proper_rotation(seed: int) -> torch.Tensor:
@@ -28,7 +28,7 @@ def sample_positions(geometry_dict) -> torch.Tensor:
 def test_beam_center_maps_to_zero_q(geometry_dict):
     row, col = geometry_dict["beam_center"]
     q = detector_to_q(torch.tensor([[row, col]], dtype=DT), geometry_dict)
-    assert torch.allclose(q, torch.zeros_like(q), atol=1e-12)
+    assert torch.allclose(q, torch.zeros_like(q), atol=1e-6)
 
 
 def test_lift_then_project_is_identity(geometry_dict):
@@ -51,7 +51,7 @@ def test_q_magnitude_matches_bragg_law(geometry_dict):
         radius_m = math.hypot((row - bc_row) * pix_m, (col - bc_col) * pix_m)
         two_theta = math.atan2(radius_m, clen_m)
         expected = 2.0 * math.sin(0.5 * two_theta) / lam_A  # |q| = 2 sin(theta)/lambda
-        assert got == pytest.approx(expected, rel=1e-9, abs=1e-12)
+        assert got == pytest.approx(expected, rel=1e-6, abs=1e-6)
 
 
 def test_frame_rotation_rotates_q(geometry_dict):
@@ -59,7 +59,7 @@ def test_frame_rotation_rotates_q(geometry_dict):
     pos = sample_positions(geometry_dict)
     q_lab = detector_to_q(pos, geometry_dict)
     q_rot = detector_to_q(pos, geometry_dict, frame_rotation=R)
-    assert torch.allclose(q_rot, q_lab @ R, atol=1e-12)
+    assert torch.allclose(q_rot, q_lab @ R, atol=1e-6)
 
 
 def test_frame_rotation_is_invertible_through_detector(geometry_dict):
@@ -168,7 +168,7 @@ def test_panel_model_uses_physical_position_on_rotated_panel():
     # (row=3, col=15) on panel B -> physical (2, 0)
     q = detector_to_q(torch.tensor([[3.0, 15.0]], dtype=DT), g)
     expected = torch.tensor(_q_from_physical(2.0, 0.0, g), dtype=DT)
-    assert torch.allclose(q[0], expected, atol=1e-9)
+    assert torch.allclose(q[0], expected, atol=1e-6)
     # the flat mapping would give a different (wrong) q
     flat = torch.tensor(_q_from_physical(15.0 - 12.5, 3.0 - 5.0, g), dtype=DT)
     assert not torch.allclose(q[0], flat, atol=1e-6)
@@ -207,4 +207,4 @@ def test_panel_model_identity_panels_reduce_to_flat():
     q = detector_to_q(pos, g)
     for i, (r0, c0) in enumerate(pos.tolist()):
         expected = torch.tensor(_q_from_physical(c0 - bc_col, r0 - bc_row, g), dtype=DT)
-        assert torch.allclose(q[i], expected, atol=1e-9)
+        assert torch.allclose(q[i], expected, atol=1e-6)

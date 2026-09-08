@@ -1,5 +1,3 @@
-"""Known-cell refinement must preserve the basis used for Miller indices."""
-
 import math
 
 import pytest
@@ -10,15 +8,29 @@ from probixi.indexer.lattice import cell_to_B
 from probixi.indexer.refine import RefineResult, _axis_angle_to_rotation
 from probixi.io import CellParams
 
+DEVICES = [
+    "cpu",
+    pytest.param("cuda", marks=pytest.mark.cuda),
+    pytest.param("mps", marks=pytest.mark.mps),
+]
 
-@pytest.mark.parametrize("device", ["cpu", "cuda"])
+
+def _require(device):
+    if device == "cuda" and not torch.cuda.is_available():
+        pytest.skip("CUDA device not available")
+    if device == "mps" and not torch.backends.mps.is_available():
+        pytest.skip("MPS device not available")
+
+
+@pytest.mark.parametrize("device", DEVICES)
 @pytest.mark.parametrize("angles", [(89.37, 84.94, 67.84), (90.0, 110.0, 90.0)])
 def test_known_cell_candidate_preserves_basis(geometry_dict, device, angles):
-    if device == "cuda" and not torch.cuda.is_available():
-        pytest.skip("CUDA unavailable")
+    _require(device)
     cell = CellParams(14.97, 18.85, 18.89, *map(math.radians, angles))
     idx = Indexer(geometry_dict, cell, device=torch.device(device))
-    B = cell_to_B(cell, device=device)
+    B = cell_to_B(cell, device=device, dtype=idx.dtype)
+    # float32 round-trips through B_to_cell carry ~1e-7; a basis mix-up is O(1e-2)
+    atol = 1e-5
     U = _axis_angle_to_rotation(B.new_tensor([0.4, -0.7, 1.2]))
     A = U @ B
     hkl = torch.tensor(
@@ -38,8 +50,8 @@ def test_known_cell_candidate_preserves_basis(geometry_dict, device, angles):
         rr, frame_index=0, n_peaks=6, positions=A.new_zeros((6, 2))
     )
     assert r is not None
-    assert torch.allclose(r.U @ r.B, r.A, atol=1e-10)
-    assert torch.allclose(r.B, B, atol=1e-10)
-    assert torch.allclose(r.U, U, atol=1e-10)
-    assert torch.linalg.det(r.U).item() == pytest.approx(1.0)
-    assert torch.allclose(r.A @ r.hkl.T.to(A.dtype), A @ hkl.T.to(A.dtype))
+    assert torch.allclose(r.U @ r.B, r.A, atol=atol)
+    assert torch.allclose(r.B, B, atol=atol)
+    assert torch.allclose(r.U, U, atol=atol)
+    assert torch.linalg.det(r.U).item() == pytest.approx(1.0, abs=atol)
+    assert torch.allclose(r.A @ r.hkl.T.to(A.dtype), A @ hkl.T.to(A.dtype), atol=atol)

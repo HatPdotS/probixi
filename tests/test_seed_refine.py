@@ -15,7 +15,7 @@ from probixi.indexer.refine import (
 )
 from probixi.indexer.seed import sphere_seed_candidates
 
-DT = torch.float64
+DT = torch.float32
 
 
 def _synthetic_q(cell, U, max_index: int = 3) -> tuple[torch.Tensor, torch.Tensor]:
@@ -192,7 +192,7 @@ def test_refine_misaligned_frames_raises(cell):
 
 def test_axis_angle_omega_zero_is_identity():
     R = _axis_angle_to_rotation(torch.zeros(3, dtype=DT))
-    assert torch.allclose(R, torch.eye(3, dtype=DT), atol=1e-12)
+    assert torch.allclose(R, torch.eye(3, dtype=DT), atol=1e-6)
 
 
 def test_axis_angle_matches_rodrigues_for_known_axis_angle():
@@ -204,22 +204,22 @@ def test_axis_angle_matches_rodrigues_for_known_axis_angle():
     K = torch.tensor([[0.0, -z, y], [z, 0.0, -x], [-y, x, 0.0]], dtype=DT)
     eye = torch.eye(3, dtype=DT)
     expected = eye + math.sin(angle) * K + (1.0 - math.cos(angle)) * (K @ K)
-    assert torch.allclose(R, expected, atol=1e-12)
+    assert torch.allclose(R, expected, atol=1e-6)
 
 
 def test_axis_angle_rotates_vector_by_known_angle():
     # 90 deg about +z carries x_hat onto y_hat
     R = _axis_angle_to_rotation(torch.tensor([0.0, 0.0, math.pi / 2], dtype=DT))
     out = R @ torch.tensor([1.0, 0.0, 0.0], dtype=DT)
-    assert torch.allclose(out, torch.tensor([0.0, 1.0, 0.0], dtype=DT), atol=1e-12)
+    assert torch.allclose(out, torch.tensor([0.0, 1.0, 0.0], dtype=DT), atol=1e-6)
 
 
 def test_axis_angle_output_is_orthonormal_with_unit_determinant():
     g = torch.Generator().manual_seed(11)
     omega = torch.randn(3, generator=g, dtype=DT)
     R = _axis_angle_to_rotation(omega)
-    assert torch.allclose(R @ R.transpose(-1, -2), torch.eye(3, dtype=DT), atol=1e-12)
-    assert float(torch.linalg.det(R)) == pytest.approx(1.0, abs=1e-12)
+    assert torch.allclose(R @ R.transpose(-1, -2), torch.eye(3, dtype=DT), atol=1e-6)
+    assert float(torch.linalg.det(R)) == pytest.approx(1.0, abs=1e-6)
 
 
 def test_axis_angle_batched_shape_and_orthonormal():
@@ -228,9 +228,9 @@ def test_axis_angle_batched_shape_and_orthonormal():
     R = _axis_angle_to_rotation(omega)
     assert R.shape == (4, 5, 3, 3)
     eye = torch.eye(3, dtype=DT).expand(4, 5, 3, 3)
-    assert torch.allclose(R @ R.transpose(-1, -2), eye, atol=1e-12)
+    assert torch.allclose(R @ R.transpose(-1, -2), eye, atol=1e-6)
     dets = torch.linalg.det(R)
-    assert torch.allclose(dets, torch.ones(4, 5, dtype=DT), atol=1e-12)
+    assert torch.allclose(dets, torch.ones(4, 5, dtype=DT), atol=1e-6)
 
 
 def test_axis_angle_rejects_bad_last_dim():

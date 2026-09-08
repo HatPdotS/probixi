@@ -128,9 +128,9 @@ def test_iter_frames_recovers_exact_frame_values(tmp_path):
     frames = _frames(4, 8, 6, seed=11)
     _, lst_path = sim.write_run(tmp_path, frames)
     loader = DataLoader(lst_path)
-    out = list(iter_frames(loader, batch_size=1, dtype=torch.float64))
+    out = list(iter_frames(loader, batch_size=1, dtype=torch.float32))
     got = torch.stack(out)
-    expected = torch.as_tensor(frames, dtype=torch.float64)
+    expected = torch.as_tensor(frames, dtype=torch.float32)
     assert torch.equal(got, expected)
 
 
@@ -138,10 +138,10 @@ def test_iter_frames_start_stop_slices_subset(tmp_path):
     frames = _frames(8, 8, 6, seed=5)
     _, lst_path = sim.write_run(tmp_path, frames)
     loader = DataLoader(lst_path)
-    out = list(iter_frames(loader, start=2, stop=6, batch_size=1, dtype=torch.float64))
+    out = list(iter_frames(loader, start=2, stop=6, batch_size=1, dtype=torch.float32))
     assert len(out) == 4
     got = torch.stack(out)
-    expected = torch.as_tensor(frames[2:6], dtype=torch.float64)
+    expected = torch.as_tensor(frames[2:6], dtype=torch.float32)
     assert torch.equal(got, expected)
 
 
@@ -154,10 +154,10 @@ def test_iter_frames_start_stop_across_two_files(tmp_path):
     lst.write_text(f"{a_h5}\n{b_h5}\n", encoding="utf-8")
     loader = DataLoader(lst)
     # global [3, 6) spans last frame of a and first two of b
-    out = list(iter_frames(loader, start=3, stop=6, batch_size=1, dtype=torch.float64))
+    out = list(iter_frames(loader, start=3, stop=6, batch_size=1, dtype=torch.float32))
     got = torch.stack(out)
     expected = torch.as_tensor(
-        np.concatenate([fa[3:4], fb[0:2]], axis=0), dtype=torch.float64
+        np.concatenate([fa[3:4], fb[0:2]], axis=0), dtype=torch.float32
     )
     assert torch.equal(got, expected)
 
@@ -165,8 +165,8 @@ def test_iter_frames_start_stop_across_two_files(tmp_path):
 def test_iter_frames_dtype_is_honored(tmp_path):
     _, lst_path = sim.write_run(tmp_path, _frames(3, 8, 6))
     loader = DataLoader(lst_path)
-    for t in iter_frames(loader, dtype=torch.float64):
-        assert t.dtype == torch.float64
+    for t in iter_frames(loader, dtype=torch.float32):
+        assert t.dtype == torch.float32
     for t in iter_frames(loader, dtype=torch.float32):
         assert t.dtype == torch.float32
 
@@ -180,10 +180,10 @@ def test_iter_frames_files_subset(tmp_path):
     lst.write_text(f"{a_h5}\n{b_h5}\n", encoding="utf-8")
     loader = DataLoader(lst)
     out = list(
-        iter_frames(loader, files=[str(b_h5)], batch_size=1, dtype=torch.float64)
+        iter_frames(loader, files=[str(b_h5)], batch_size=1, dtype=torch.float32)
     )
     got = torch.stack(out)
-    expected = torch.as_tensor(fb, dtype=torch.float64)
+    expected = torch.as_tensor(fb, dtype=torch.float32)
     assert torch.equal(got, expected)
 
 

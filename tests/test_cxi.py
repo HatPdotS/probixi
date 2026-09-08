@@ -63,8 +63,8 @@ def test_resolves_hdf5_clen_and_wavelength_from_data_file(tmp_path):
         tmp_path,
         _frames(3, 8, 6),
         extra_datasets={
-            CLEN_PATH: np.array([-500.0, -500.0, -500.0], dtype=np.float64),
-            ENERGY_PATH: np.full(3, EV_ANGSTROM, dtype=np.float64),
+            CLEN_PATH: np.array([-500.0, -500.0, -500.0], dtype=np.float32),
+            ENERGY_PATH: np.full(3, EV_ANGSTROM, dtype=np.float32),
         },
     )
     g = DataLoader(lst, geom).metadata.geometry
@@ -84,8 +84,8 @@ def test_clen_already_in_metres_is_not_rescaled(tmp_path):
         tmp_path,
         _frames(2, 8, 6),
         extra_datasets={
-            CLEN_PATH: np.array([0.092, 0.092], dtype=np.float64),
-            ENERGY_PATH: np.full(2, 12398.0, dtype=np.float64),
+            CLEN_PATH: np.array([0.092, 0.092], dtype=np.float32),
+            ENERGY_PATH: np.full(2, 12398.0, dtype=np.float32),
         },
     )
     g = DataLoader(lst, geom).metadata.geometry
@@ -108,7 +108,7 @@ def test_clen_path_naming_a_group_warns_not_crashes(tmp_path):
     _, lst = sim.write_cxi_run(
         tmp_path,
         _frames(2, 8, 6),
-        extra_datasets={ENERGY_PATH: np.full(2, 12398.0, dtype=np.float64)},
+        extra_datasets={ENERGY_PATH: np.full(2, 12398.0, dtype=np.float32)},
     )
     with pytest.warns(UserWarning, match="not a dataset"):
         g = DataLoader(lst, geom).metadata.geometry
@@ -137,8 +137,8 @@ def test_iter_frames_reads_real_data_not_decoy(tmp_path, geom_file):
     frames = _frames(4, 8, 6, seed=3)
     _, lst = sim.write_cxi_run(tmp_path, frames, decoy=True)
     loader = DataLoader(lst, geom_file)
-    out = torch.stack(list(iter_frames(loader, dtype=torch.float64)))
-    assert torch.equal(out, torch.as_tensor(frames, dtype=torch.float64))
+    out = torch.stack(list(iter_frames(loader, dtype=torch.float32)))
+    assert torch.equal(out, torch.as_tensor(frames, dtype=torch.float32))
 
 
 # --- fast-path invariance for plain stacks -----------------------------------
@@ -165,10 +165,10 @@ def test_multipanel_assembly_recovers_dataspace_image(tmp_path, multipanel_geom_
     info = next(iter(loader.metadata.files.values()))
     assert info.placements is not None and len(info.placements) == 2
 
-    out = torch.stack(list(iter_frames(loader, dtype=torch.float64)))
+    out = torch.stack(list(iter_frames(loader, dtype=torch.float32)))
     # panel 0 -> cols 0:32, panel 1 -> cols 32:64
     ref = np.concatenate([data4d[:, 0], data4d[:, 1]], axis=2)
-    assert torch.equal(out, torch.as_tensor(ref, dtype=torch.float64))
+    assert torch.equal(out, torch.as_tensor(ref, dtype=torch.float32))
 
 
 def test_multipanel_assembly_batched(tmp_path, multipanel_geom_file):
@@ -176,11 +176,11 @@ def test_multipanel_assembly_batched(tmp_path, multipanel_geom_file):
     data4d = rng.normal(100, 10, size=(3, 2, 64, 32)).astype(np.float32)
     _, lst = sim.write_multipanel_run(tmp_path, data4d)
     loader = DataLoader(lst, multipanel_geom_file)
-    out = list(iter_frames(loader, batch_size=2, dtype=torch.float64))
+    out = list(iter_frames(loader, batch_size=2, dtype=torch.float32))
     assert [t.shape[0] for t in out] == [2, 1]
     got = torch.cat(out, dim=0)
     ref = np.concatenate([data4d[:, 0], data4d[:, 1]], axis=2)
-    assert torch.equal(got, torch.as_tensor(ref, dtype=torch.float64))
+    assert torch.equal(got, torch.as_tensor(ref, dtype=torch.float32))
 
 
 def test_multipanel_layout_mismatch_fails_fast(tmp_path, multipanel_geom_file):

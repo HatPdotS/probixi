@@ -158,7 +158,7 @@ def test_peak_stream_recovers_planted_positions(run_files, geom_path):
         start_index=N_NOISE,
         estimate_scale=False,
     ).collect_peaks()
-    det = torch.tensor([[p.row, p.col] for p in peaks], dtype=torch.float64)
+    det = torch.tensor([[p.row, p.col] for p in peaks], dtype=torch.float32)
     assert det.shape[0] > 0
     matched = 0
     for target in truth.positions:

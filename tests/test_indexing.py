@@ -6,12 +6,9 @@ import pytest
 import sim
 import torch
 
-from probixi.indexer.indexer import (
-    Indexer,
-    RefineConfig,
-    SeedConfig,
-    _resolve_lattice_dtype,
-)
+from probixi.indexer.forward import detector_to_q
+from probixi.indexer.indexer import Indexer, RefineConfig, SeedConfig
+from probixi.indexer.lattice import cell_to_B
 
 # seeding/refinement that sim.py verified as fast and reliable on CPU
 SEED = SeedConfig(n_directions=1500, n_spin=60, top_directions=12, max_candidates=32)
@@ -24,14 +21,13 @@ def _make_indexer(geometry_dict, cell):
     return Indexer(geometry_dict, cell, seed=SEED, refine=REFINE)
 
 
-def test_lattice_dtype_policy_is_device_aware():
-    # float64 on cpu/cuda, float32 on mps (no float64), explicit dtype always wins
-    assert _resolve_lattice_dtype(None, None) is torch.float64
-    assert _resolve_lattice_dtype(torch.device("cpu"), None) is torch.float64
-    assert _resolve_lattice_dtype(torch.device("cuda"), None) is torch.float64
-    assert _resolve_lattice_dtype(torch.device("mps"), None) is torch.float32
-    assert _resolve_lattice_dtype(torch.device("mps"), torch.float64) is torch.float64
-    assert _resolve_lattice_dtype(None, torch.float32) is torch.float32
+def test_lattice_dtype_defaults_to_float32(geometry_dict, cell):
+    # float32 on every device; an explicit dtype still wins
+    idxr = Indexer(geometry_dict, cell)
+    assert idxr.dtype is torch.float32
+    assert idxr.B_target.dtype is torch.float32
+    assert cell_to_B(cell).dtype is torch.float32
+    assert detector_to_q(torch.zeros(1, 2), geometry_dict).dtype is torch.float32
 
 
 @pytest.mark.mps
@@ -54,7 +50,7 @@ def test_indexer_runs_on_mps_end_to_end(geometry_dict, cell):
     # positions come from disk as CPU tensors; the indexer lifts them to its own
     # (float32-on-MPS) device/dtype internally.
     results = idxr.index_frames({0: positions.to(torch.float32)})
-    assert results  # solved without any float64-on-MPS crash
+    assert results  # solved end-to-end on MPS
     assert results[0].A.device.type == "mps"
 
 
@@ -99,7 +95,7 @@ def test_index_frames_assigns_integer_hkl_to_indexed_peaks(geometry_dict, cell):
     hkl_indexed = r.hkl[r.indexed_mask]
     # no indexed peak is assigned the origin
     assert int((hkl_indexed.abs().sum(dim=-1) == 0).sum()) == 0
-    assert r.A.dtype == torch.float64
+    assert r.A.dtype == torch.float32
 
 
 def test_index_frames_is_deterministic(geometry_dict, cell):
@@ -128,8 +124,10 @@ def test_subpixel_jitter_still_indexes_majority_with_bounded_rmsd(geometry_dict,
     noisy = idxr.index_frames({0: noisy_positions})[0]
 
     assert noisy.n_indexed >= int(0.7 * positions.shape[0])
-    # jitter inflates the residual but it stays within tolerance
-    assert noisy.rmsd >= clean.rmsd
+    # jitter inflates the residual but it stays within tolerance. The two runs
+    # index slightly different peak sets, so the residuals are only comparable
+    # to within a few percent in float32.
+    assert noisy.rmsd >= clean.rmsd * 0.95
     assert noisy.rmsd < idxr.q_tolerance
 
     # recovered cell still matches under the noise

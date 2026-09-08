@@ -54,7 +54,7 @@ def test_recall_detects_every_injected_spot_with_subpixel_centroids():
     peaks = finder.peak_stream([torch.from_numpy(frame)]).collect_peaks()
 
     assert len(peaks) == pos.shape[0]
-    det = torch.tensor([[p.row, p.col] for p in peaks], dtype=torch.float64)
+    det = torch.tensor([[p.row, p.col] for p in peaks], dtype=torch.float32)
     for truth in pos:
         dist = torch.linalg.vector_norm(det - torch.tensor(truth), dim=1)
         assert float(dist.min()) < 1.0
@@ -89,13 +89,13 @@ def test_low_snr_spot_below_threshold_is_not_detected():
         SHAPE, truth, [60.0], background=BG, noise_sigma=NS, seed=5
     )
     peaks = finder.peak_stream([torch.from_numpy(faint)]).collect_peaks()
-    det = torch.tensor([[p.row, p.col] for p in peaks], dtype=torch.float64)
+    det = torch.tensor([[p.row, p.col] for p in peaks], dtype=torch.float32)
     for p in peaks:
         # nothing detected at the faint spot
         assert (
             torch.linalg.vector_norm(
-                torch.tensor([p.row, p.col], dtype=torch.float64)
-                - torch.tensor(truth[0], dtype=torch.float64)
+                torch.tensor([p.row, p.col], dtype=torch.float32)
+                - torch.tensor(truth[0], dtype=torch.float32)
             )
             > 2.0
         )
@@ -219,10 +219,10 @@ def test_size_max_rejects_an_oversized_blob():
 
 
 def test_gaussian_kernel_2d_is_normalized_odd_and_symmetric():
-    k = gaussian_kernel_2d(7, 1.4, dtype=torch.float64)
+    k = gaussian_kernel_2d(7, 1.4, dtype=torch.float32)
     assert k.shape == (7, 7)
     assert k.shape[0] % 2 == 1
-    assert float(k.sum()) == pytest.approx(1.0, abs=1e-12)
+    assert float(k.sum()) == pytest.approx(1.0, abs=1e-6)
     # symmetric under both flips and its own transpose
     assert torch.allclose(k, k.flip(0))
     assert torch.allclose(k, k.flip(1))
@@ -240,10 +240,10 @@ def test_gaussian_kernel_1d_is_outer_product_factor():
     from probixi.peakfinding.peaks.neighborhood import gaussian_kernel_1d
 
     for size, sigma in [(5, 1.0), (7, 1.4), (15, 2.4)]:
-        a = gaussian_kernel_1d(size, sigma, dtype=torch.float64)
-        k2 = gaussian_kernel_2d(size, sigma, dtype=torch.float64)
-        assert torch.allclose(torch.outer(a, a), k2, atol=1e-12)
-        assert float(a.sum()) == pytest.approx(1.0, abs=1e-12)
+        a = gaussian_kernel_1d(size, sigma, dtype=torch.float32)
+        k2 = gaussian_kernel_2d(size, sigma, dtype=torch.float32)
+        assert torch.allclose(torch.outer(a, a), k2, atol=1e-6)
+        assert float(a.sum()) == pytest.approx(1.0, abs=1e-6)
 
 
 def test_separable_convs_match_dense_conv2d():
@@ -260,12 +260,12 @@ def test_separable_convs_match_dense_conv2d():
 
     torch.manual_seed(0)
     H, W = 137, 151
-    z = torch.randn(H, W, dtype=torch.float64)
+    z = torch.randn(H, W, dtype=torch.float32)
     mask = torch.rand(H, W) > 0.1
-    m = mask.to(torch.float64)
+    m = mask.to(torch.float32)
 
     for size, sigma in [(7, 1.0), (11, 1.6), (15, 2.4)]:
-        k2 = gaussian_kernel_2d(size, sigma, dtype=torch.float64)
+        k2 = gaussian_kernel_2d(size, sigma, dtype=torch.float32)
         u = k2 / k2.norm()
         pad = (size // 2,) * 4
         num = F.conv2d(
@@ -275,9 +275,9 @@ def test_separable_convs_match_dense_conv2d():
             F.pad(m.view(1, 1, H, W), pad), (u * u).view(1, 1, size, size)
         ).reshape(H, W)
         ref = num / den.clamp_min(1e-12).sqrt()
-        assert torch.allclose(ref, matched_filter_z(z, k2, mask, den=den), atol=1e-12)
+        assert torch.allclose(ref, matched_filter_z(z, k2, mask, den=den), atol=1e-6)
 
-    k2 = gaussian_kernel_2d(5, 1.0, dtype=torch.float64)
+    k2 = gaussian_kernel_2d(5, 1.0, dtype=torch.float32)
     den = mask_denominator(m, k2)
     ref = (
         F.conv2d(
@@ -286,8 +286,8 @@ def test_separable_convs_match_dense_conv2d():
         ).reshape(H, W)
         / den
     )
-    assert torch.allclose(ref, smooth_logits(z, k2, mask=mask, den=den), atol=1e-12)
-    zb = torch.randn(3, H, W, dtype=torch.float64)
+    assert torch.allclose(ref, smooth_logits(z, k2, mask=mask, den=den), atol=1e-6)
+    zb = torch.randn(3, H, W, dtype=torch.float32)
     refb = torch.stack(
         [
             F.conv2d(
@@ -299,7 +299,7 @@ def test_separable_convs_match_dense_conv2d():
         ]
     )
     assert torch.allclose(
-        refb, smooth_logits_batch(zb, k2, mask=mask, den=den), atol=1e-12
+        refb, smooth_logits_batch(zb, k2, mask=mask, den=den), atol=1e-6
     )
 
 
