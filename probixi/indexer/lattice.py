@@ -28,7 +28,7 @@ def _reduce_coefs(max_coef: int, device, dtype: torch.dtype) -> Tensor:
 def cell_to_B(
     cell: CellParams,
     device=None,
-    dtype: torch.dtype = torch.float64,
+    dtype: torch.dtype = torch.float32,
 ) -> Tensor:
     # Reciprocal basis B = M^-T from cell params: q = B @ hkl (crystallographer
     # convention, no 2*pi). M columns are the direct lattice vectors a, b, c.

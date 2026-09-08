@@ -246,8 +246,8 @@ def spot_enrichment(
     elif lam <= 0.0:
         p_value = 0.0
     else:
-        k = torch.tensor(float(n_bright), dtype=torch.float64)
+        k = torch.tensor(float(n_bright), dtype=torch.float32)
         p_value = float(
-            torch.special.gammainc(k, torch.tensor(lam, dtype=torch.float64))
+            torch.special.gammainc(k, torch.tensor(lam, dtype=torch.float32))
         )
     return n_bright, enrichment, p_value

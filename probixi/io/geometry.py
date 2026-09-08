@@ -386,7 +386,7 @@ def _dataset_mean(f: h5py.File, path: str) -> Optional[float]:
             f"geometry path {path!r} is not a dataset in {f.filename!r}; leaving unset"
         )
         return None
-    values = np.asarray(node[()], dtype=np.float64).ravel()
+    values = np.asarray(node[()], dtype=np.float32).ravel()
     finite = values[np.isfinite(values)]
     if finite.size == 0:
         warnings.warn(

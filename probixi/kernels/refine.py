@@ -98,7 +98,7 @@ def kernel(
     b20 = tl.load(A + c * 9 + 6)
     b21 = tl.load(A + c * 9 + 7)
     b22 = tl.load(A + c * 9 + 8)
-    x = tl.full((), 0.0, tl.float64)
+    x = tl.full((), 0.0, tl.float32)
     y = x
     z = x
     mx = x
@@ -135,7 +135,7 @@ def kernel(
         count = tl.sum(match.to(tl.int32), 0)
         loss = tl.sum((dx * dx + dy * dy + dz * dz) * wm, 0) / per_w + (
             count < MIN_INDEXED
-        ).to(tl.float64)
+        ).to(tl.float32)
         tl.store(HISTORY + c * STEPS + step, loss)
         # Gradient of R(omega) @ v, with v = A_anchor @ h.
         ux = b00 * h + b01 * k + b02 * ell
@@ -238,7 +238,7 @@ def refine_triton(
     weights_per_frame=None,
 ):
     assert A_init_per_frame and max_iters > 0
-    assert all(a.dtype == torch.float64 and a.is_cuda for a in A_init_per_frame)
+    assert all(a.dtype == torch.float32 and a.is_cuda for a in A_init_per_frame)
     counts = [len(a) for a in A_init_per_frame]
     ns = [len(q) for q in q_obs_per_frame]
     F = len(counts)
@@ -246,8 +246,8 @@ def refine_triton(
     C = sum(counts)
     dev = A_init_per_frame[0].device
     A = torch.cat(A_init_per_frame).contiguous()
-    Q = torch.zeros(F, N, 3, device=dev, dtype=torch.float64)
-    W = torch.zeros(F, N, device=dev, dtype=torch.float64)
+    Q = torch.zeros(F, N, 3, device=dev, dtype=torch.float32)
+    W = torch.zeros(F, N, device=dev, dtype=torch.float32)
     for f, (q, n) in enumerate(zip(q_obs_per_frame, ns)):
         Q[f, :n] = q
         W[f, :n] = (
@@ -264,20 +264,20 @@ def refine_triton(
     bc1 = torch.tensor(
         [lr / (1 - 0.9 ** (s + 1)) for s in range(max_iters)],
         device=dev,
-        dtype=torch.float64,
+        dtype=torch.float32,
     )
     bc2 = torch.tensor(
         [math.sqrt(1 - 0.999 ** (s + 1)) for s in range(max_iters)],
         device=dev,
-        dtype=torch.float64,
+        dtype=torch.float32,
     )
     AO = torch.empty_like(A)
     HK = torch.empty(C, N, 3, device=dev, dtype=torch.int64)
     IDX = torch.empty(C, N, device=dev, dtype=torch.bool)
-    RMS = torch.empty(C, device=dev, dtype=torch.float64)
+    RMS = torch.empty(C, device=dev, dtype=torch.float32)
     SCORE = torch.empty_like(RMS)
     NI = torch.empty(C, device=dev, dtype=torch.int64)
-    HISTORY = torch.empty(C, max_iters, device=dev, dtype=torch.float64)
+    HISTORY = torch.empty(C, max_iters, device=dev, dtype=torch.float32)
     kernel[(C,)](
         A,
         Q,

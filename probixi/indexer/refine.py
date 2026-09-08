@@ -103,7 +103,7 @@ def refine_multiframe_known_B(
         and all(0 < len(q) <= 128 and q.shape[1:] == (3,) for q in q_obs_per_frame)
         and all(
             t.is_cuda
-            and t.dtype == torch.float64
+            and t.dtype == torch.float32
             and not t.requires_grad
             and t.device == A_init_per_frame[0].device
             for t in [*A_init_per_frame, *q_obs_per_frame]

@@ -81,7 +81,7 @@ class PanelNoise(NoiseStats):
             and frame.is_cuda
             and frame.is_contiguous()
             and not frame.requires_grad
-            and frame.dtype in (torch.float32, torch.float64)
+            and frame.dtype == torch.float32
             and frame.dtype == self.mean_.dtype
             and frame.device == self.mean_.device
             and (
@@ -103,9 +103,7 @@ class PanelNoise(NoiseStats):
                 self.mean_.device,
             )
             if getattr(self, "_kernel_key", None) != key:
-                self._kernel_project = kernel.TiledPanelProjector(
-                    self, fp64=frame.dtype == torch.float64
-                )
+                self._kernel_project = kernel.TiledPanelProjector(self)
                 self._kernel_key = key
             return self._kernel_project(frame, mask)
         valid = self.valid_mask

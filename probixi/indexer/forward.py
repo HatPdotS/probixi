@@ -61,7 +61,7 @@ def _panel_model_bases(
 def _geometry_constants(
     geometry: dict,
     device: Optional[torch.device] = None,
-    dtype: torch.dtype = torch.float64,
+    dtype: torch.dtype = torch.float32,
 ) -> dict:
     bc = geometry["beam_center"]
     return {
@@ -114,7 +114,7 @@ def detector_to_q(
     positions: Tensor,
     geometry: dict,
     frame_rotation: Optional[Tensor] = None,
-    dtype: torch.dtype = torch.float64,
+    dtype: torch.dtype = torch.float32,
 ) -> Tensor:
     # Detector pixels -> reciprocal-space q (A^-1) via the Ewald construction
     # (beam +z): pixel lab direction s_hat gives q = (s_hat - s0)/lambda, s0 = (0,0,1).
@@ -177,7 +177,7 @@ def q_to_detector(
     q: Tensor,
     geometry: dict,
     frame_rotation: Optional[Tensor] = None,
-    dtype: torch.dtype = torch.float64,
+    dtype: torch.dtype = torch.float32,
 ) -> Tensor:
     # S = q*lambda + s0
     # Intersect the ray with z = clen.
