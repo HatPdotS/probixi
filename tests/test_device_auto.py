@@ -40,9 +40,12 @@ def test_auto_device_falls_back_to_cpu_without_an_accelerator(monkeypatch):
 
 
 def test_auto_device_tolerates_a_torch_build_without_mps(monkeypatch):
-    # torch.backends.mps is absent on some builds; that must not raise
+    # torch.backends.mps is absent on some builds; that must not raise. Deleting
+    # the attribute cannot simulate it: torch.backends defines a module-level
+    # __getattr__ that re-imports the submodule, so getattr always finds it
+    # again. Swap the whole namespace for one that never had mps.
     monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
-    monkeypatch.delattr(torch.backends, "mps", raising=False)
+    monkeypatch.setattr(torch, "backends", types.SimpleNamespace())
     assert auto_device().type == "cpu"
 
 
