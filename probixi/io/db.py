@@ -46,6 +46,7 @@ _FRAME_COLUMNS = (
     "diffraction_limit_nm_inv",
     "peak_resolution_nm_inv",
     "num_reflections",
+    "adu_per_photon",
     "cell_a_A",
     "cell_b_A",
     "cell_c_A",
@@ -117,6 +118,7 @@ CREATE TABLE frames (
     diffraction_limit_nm_inv DOUBLE,
     peak_resolution_nm_inv   DOUBLE,
     num_reflections          INTEGER,
+    adu_per_photon           DOUBLE,
     cell_a_A                 DOUBLE,
     cell_b_A                 DOUBLE,
     cell_c_A                 DOUBLE,
@@ -150,12 +152,15 @@ CREATE TABLE reflections (
 );
 
 CREATE TABLE peaks (
-    frame_id          VARCHAR,
-    fs                DOUBLE,
-    ss                DOUBLE,
-    intensity         DOUBLE,
-    resolution_nm_inv DOUBLE,
-    panel             VARCHAR
+    frame_id           VARCHAR,
+    fs                 DOUBLE,
+    ss                 DOUBLE,
+    intensity          DOUBLE,
+    resolution_nm_inv  DOUBLE,
+    panel              VARCHAR,
+    n_pixels           DOUBLE,
+    photons            DOUBLE,
+    background_photons DOUBLE
 );
 """
 
@@ -318,14 +323,25 @@ class DuckDBOffloader(_StreamWriter):
         fid = frame_id(filename, event)
 
         stats = result.kept_stats
-        rows, cols, intensities = (
-            torch.stack([stats.row_centroid, stats.col_centroid, stats.intensity_sum])
+        rows, cols, intensities, bg, npix = (
+            torch.stack(
+                [
+                    stats.row_centroid,
+                    stats.col_centroid,
+                    stats.intensity_sum,
+                    stats.background_sum,
+                    stats.size.to(stats.intensity_sum.dtype),
+                ]
+            )
             .detach()
             .cpu()
             .tolist()
         )
+        gain = self._gain()
         max_recip = 0.0
-        for row, col, intensity in zip(rows, cols, intensities):
+        for row, col, intensity, bg_adu, n_pix in zip(
+            rows, cols, intensities, bg, npix
+        ):
             recip = self._resolution_nm_inv(row, col)
             max_recip = max(max_recip, recip)
             self._peak_rows.append(
@@ -336,6 +352,9 @@ class DuckDBOffloader(_StreamWriter):
                     float(intensity),
                     recip,
                     self._panel_for(col, row),
+                    float(n_pix),
+                    (float(intensity) + float(bg_adu)) / gain,
+                    float(bg_adu) / gain,
                 )
             )
 
@@ -406,11 +425,28 @@ class DuckDBOffloader(_StreamWriter):
 
     # FRAME =========================
 
+    def _gain(self, result=None) -> float:
+        """ADU per photon: what the frame was processed with, else geometry."""
+        g = getattr(result, "adu_per_photon", None) if result is not None else None
+        if g is None:
+            g = (self.geometry or {}).get("adu_per_photon")
+        try:
+            g = float(g)
+        except (TypeError, ValueError):
+            return 1.0
+        return g if g > 0.0 else 1.0
+
     def _append_peaks(self, result: "IndexResult", fid: str) -> float:
         positions = result.positions.detach().cpu().tolist()
         intensities = result.intensities.detach().cpu().tolist()
+        n = len(intensities)
+        bg = _to_list(result.peak_background_sum, n)
+        npix = _to_list(result.peak_n_pixels, n)
+        gain = self._gain(result)
         max_recip = 0.0
-        for (row, col), intensity in zip(positions, intensities):
+        for (row, col), intensity, bg_adu, n_pix in zip(
+            positions, intensities, bg, npix
+        ):
             recip = self._resolution_nm_inv(row, col)
             max_recip = max(max_recip, recip)
             self._peak_rows.append(
@@ -421,6 +457,9 @@ class DuckDBOffloader(_StreamWriter):
                     float(intensity),
                     recip,
                     self._panel_for(col, row),
+                    n_pix,
+                    (float(intensity) + bg_adu) / gain,
+                    bg_adu / gain,
                 )
             )
         return max_recip
@@ -502,6 +541,7 @@ class DuckDBOffloader(_StreamWriter):
             drl,
             peak_recip,
             int(num_reflections),
+            self._gain(result),
             recovered.a,  # B_to_cell returns edges in Angstroms
             recovered.b,
             recovered.c,
@@ -539,6 +579,7 @@ class DuckDBOffloader(_StreamWriter):
             ("serial", int(self._serial)),
             ("n_peaks", int(n_peaks)),
             ("peak_resolution_nm_inv", peak_recip),
+            ("adu_per_photon", self._gain()),
         ):
             row[_FRAME_COLUMNS.index(name)] = value
         return tuple(row)
@@ -575,10 +616,17 @@ class DuckDBOffloader(_StreamWriter):
             self._refl_rows.clear()
         if self._peak_rows:
             self._conn.executemany(
-                "INSERT INTO peaks VALUES (?, ?, ?, ?, ?, ?)",
+                "INSERT INTO peaks VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 self._peak_rows,
             )
             self._peak_rows.clear()
+
+
+def _to_list(t, n: int) -> list:
+    """Optional (N,) tensor -> floats, or zeros when it was not recorded."""
+    if t is None:
+        return [0.0] * n
+    return [float(v) for v in t.detach().cpu().tolist()]
 
 
 def _as_float(value) -> Optional[float]:

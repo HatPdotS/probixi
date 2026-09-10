@@ -105,6 +105,15 @@ class IndexResult:
     predicted_background : Tensor, optional
         (M,) mean per-pixel noise background under each box (the CrystFEL
         stream's ``background`` column; informational only).
+    peak_background_sum : Tensor, optional
+        (N,) noise-model background summed over each *detected* peak's own
+        pixels, aligned with ``positions``/``intensities``. Only searched peaks
+        carry this: a predicted position has no measured blob to sum over.
+    peak_n_pixels : Tensor, optional
+        (N,) pixel count of each detected peak's blob.
+    adu_per_photon : float, optional
+        Detector gain the frame was processed with, for turning the ADU columns
+        into photon counts.
     diffraction_limit : float, optional
         Per-crystal resolution limit (nm^-1) from integrated I/sigma; reflections
         beyond it are dropped and it is written as the stream's
@@ -146,6 +155,9 @@ class IndexResult:
     predicted_sigmas: Optional[Tensor] = None
     predicted_peak: Optional[Tensor] = None
     predicted_background: Optional[Tensor] = None
+    peak_background_sum: Optional[Tensor] = None
+    peak_n_pixels: Optional[Tensor] = None
+    adu_per_photon: Optional[float] = None
     diffraction_limit: Optional[float] = None
     enrichment: Optional[float] = None
     n_bright: Optional[int] = None
@@ -717,7 +729,7 @@ class Indexer:
 
     def _positions_from_frame(
         self, r: PeakResult
-    ) -> tuple[Tensor, Tensor, Tensor, Tensor]:
+    ) -> tuple[Tensor, Tensor, Tensor, Tensor, Tensor, Tensor]:
         # Pull kept peak-blob centroids and photometry off a PeakResult
         stats = r.kept_stats
         positions = torch.stack([stats.row_centroid, stats.col_centroid], dim=-1).to(
@@ -726,7 +738,9 @@ class Indexer:
         intensities = stats.intensity_sum.to(device=self.device, dtype=self.dtype)
         sigmas = stats.intensity_sigma.to(device=self.device, dtype=self.dtype)
         weights = stats.posterior_mean.to(device=self.device, dtype=self.dtype)
-        return positions, intensities, sigmas, weights
+        bg_sum = stats.background_sum.to(device=self.device, dtype=self.dtype)
+        n_pix = stats.size.to(device=self.device, dtype=self.dtype)
+        return positions, intensities, sigmas, weights, bg_sum, n_pix
 
     def index_stream(
         self,
@@ -773,6 +787,10 @@ class Indexer:
                 res = results.get(b["idx"])
                 if res is None:
                     continue
+                # detected-peak photometry, aligned with res.positions
+                res.peak_background_sum = b["peak_bg"]
+                res.peak_n_pixels = b["peak_npix"]
+                res.adu_per_photon = self._adu_per_photon()
                 if self.integrate.enabled and b["excess"] is not None:
                     self._integrate_result(
                         res,
@@ -793,7 +811,14 @@ class Indexer:
                     continue
                 stats.hits += 1
                 idx = r.frame_index if r.frame_index is not None else 0
-                positions, intensities, sigmas, weights = self._positions_from_frame(r)
+                (
+                    positions,
+                    intensities,
+                    sigmas,
+                    weights,
+                    peak_bg,
+                    peak_npix,
+                ) = self._positions_from_frame(r)
                 buf.append(
                     {
                         "idx": idx,
@@ -801,6 +826,8 @@ class Indexer:
                         "I": intensities,
                         "sig": sigmas,
                         "w": weights,
+                        "peak_bg": peak_bg,
+                        "peak_npix": peak_npix,
                         "excess": r.scores.get("excess") if r.scores else None,
                         "var": r.var,
                         "mask": r.valid_mask,
