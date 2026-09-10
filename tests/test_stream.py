@@ -75,6 +75,7 @@ def _make_peak_result() -> PeakResult:
         posterior_mean=z,
         eccentricity=z,
         peakedness=z,
+        background_sum=z,
     )
     return PeakResult(
         frame_index=0,
