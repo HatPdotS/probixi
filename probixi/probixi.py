@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from functools import lru_cache
 from itertools import chain, islice
 from pathlib import Path
 from typing import Iterable, Iterator, Literal, Optional, Union
@@ -80,18 +81,31 @@ _CITATION_URL = (
 __citation__ = _CITATION.strip() + "\n"
 
 
+@lru_cache(maxsize=1)
+def mps_is_usable() -> bool:
+    """Whether this MPS can be used.
+    """
+    try:
+        torch.linalg.inv(torch.eye(3, device="mps"))
+    except Exception:
+        return False
+    return True
+
+
 def auto_device() -> torch.device:
     """Pick the best available torch device.
 
     Returns
     -------
     torch.device
-        ``cuda``, ``mps`` or ``cpu``.
+        ``cuda``, ``mps`` or ``cpu``. MPS is chosen only when it is both
+        available and able to run the pipeline's kernels; see
+        :func:`mps_is_usable`.
     """
     if torch.cuda.is_available():
         return torch.device("cuda")
     mps = getattr(torch.backends, "mps", None)
-    if mps is not None and mps.is_available():
+    if mps is not None and mps.is_available() and mps_is_usable():
         return torch.device("mps")
     return torch.device("cpu")
 
