@@ -7,8 +7,8 @@ import pytest
 import torch
 
 import probixi.cli as cli
-from probixi.multigpu import resolve_devices
 import probixi.probixi as probixi_mod
+from probixi.multigpu import resolve_devices
 from probixi.probixi import auto_device
 
 
