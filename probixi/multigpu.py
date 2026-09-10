@@ -18,7 +18,7 @@ PathLike = Union[str, Path]
 _CHUNK_MARKER = "----- Begin chunk -----"
 _SERIAL_PREFIX = "Image serial number:"
 _STREAM_VERSION_PREFIX = "CrystFEL stream format"
-_DB_DATA_TABLES = ("frames", "reflections", "peaks")
+_DB_DATA_TABLES = ("frames", "crystals", "reflections", "peaks")
 _DB_META_TABLES = ("geometry", "panels", "cell")
 
 __all__ = [
@@ -125,8 +125,7 @@ def merge_dbs(part_paths: Sequence[PathLike], output_path: PathLike) -> int:
     conn = duckdb.connect(str(out))
     meta_done = False
     try:
-        multi = None
-        tables = _DB_DATA_TABLES
+        conn.execute(_db._SCHEMA)
         for i, p in enumerate(part_paths):
             part = Path(p)
             if not part.exists() or part.stat().st_size == 0:
@@ -138,30 +137,14 @@ def merge_dbs(part_paths: Sequence[PathLike], output_path: PathLike) -> int:
             except duckdb.Error:
                 continue  # skip a crashed/corrupt worker's part
             try:
-                part_multi = bool(
-                    conn.execute(
-                        "SELECT count(*) FROM information_schema.tables WHERE table_catalog=? AND table_name='crystals'",
-                        [alias],
-                    ).fetchone()[0]
-                )
-                if multi is None:
-                    multi = part_multi
-                    conn.execute(_db._SCHEMA_V2 if multi else _db._SCHEMA)
-                    tables = (
-                        (*_DB_DATA_TABLES, "crystals") if multi else _DB_DATA_TABLES
-                    )
-                if part_multi != multi:
-                    raise ValueError("cannot merge different DuckDB schema versions")
                 if not meta_done:
                     for tbl in _DB_META_TABLES:
                         conn.execute(f"INSERT INTO {tbl} SELECT * FROM {alias}.{tbl}")
                     meta_done = True
-                for tbl in tables:
+                for tbl in _DB_DATA_TABLES:
                     conn.execute(f"INSERT INTO {tbl} SELECT * FROM {alias}.{tbl}")
             finally:
                 conn.execute(f"DETACH {alias}")
-        if multi is None:
-            conn.execute(_db._SCHEMA)
         conn.execute(_db._INDEXES)
         row = conn.execute("SELECT COUNT(*) FROM frames WHERE indexed").fetchone()
         n_indexed = row[0] if row else 0
@@ -269,7 +252,6 @@ def run_block(
         offloader = DuckDBOffloader
         # each rank backfills only its own block's non-indexed frames
         offload_kwargs["frame_range"] = (lo, hi)
-        offload_kwargs["multi_lattice"] = (cfg.seed or SeedConfig()).max_lattices > 1
     else:
         offloader = DataOffloader
     with offloader(part_path, **offload_kwargs) as off:
