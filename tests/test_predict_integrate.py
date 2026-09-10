@@ -225,6 +225,7 @@ def test_integrate_deblend_owns_shared_pixel_by_nearest_then_lowest_index():
     assert float(intensity.sum()) == pytest.approx(210.0, abs=1e-3)
 
 
+@pytest.mark.mps
 def test_integrate_deblend_runs_on_mps_and_matches_cpu():
     # The M>1 deblend tie-break uses an int64 scatter_reduce, which has no MPS
     # kernel in some builds; guard that it runs and agrees with CPU.
