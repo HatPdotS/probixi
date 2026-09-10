@@ -428,3 +428,26 @@ def test_cli_missing_cell_without_peaks_only_fails(tmp_path, run_files, geom_pat
 
     assert isinstance(result.exception, (click.UsageError, SystemExit))
     assert "unit cell" in result.output
+
+
+def test_pipeline_resolves_a_concrete_device_by_default(run_files, geom_path):
+    # device=None must not reach torch as None: .to(None) is a silent no-op and
+    # the run would sit on CPU while reporting "auto"
+    from probixi.probixi import auto_device
+
+    lst_path, _, _ = run_files
+    px = _build_pipeline(lst_path, geom_path)
+    assert px.device is not None
+    assert px.device == auto_device()
+    assert px.indexer is not None and px.indexer.device == px.device
+
+
+def test_pipeline_normalises_a_string_device(run_files, geom_path):
+    lst_path, _, _ = run_files
+    px = Probixi(
+        list_file=lst_path,
+        geometry_file=geom_path,
+        cell_file=CELL_FIXTURE,
+        device="cpu",
+    )
+    assert px.device == torch.device("cpu")

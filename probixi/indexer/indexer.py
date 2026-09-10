@@ -107,6 +107,15 @@ class IndexResult:
     predicted_background : Tensor, optional
         (M,) mean per-pixel noise background under each box (the CrystFEL
         stream's ``background`` column; informational only).
+    peak_background_sum : Tensor, optional
+        (N,) noise-model background summed over each *detected* peak's own
+        pixels, aligned with ``positions``/``intensities``. Only searched peaks
+        carry this: a predicted position has no measured blob to sum over.
+    peak_n_pixels : Tensor, optional
+        (N,) pixel count of each detected peak's blob.
+    adu_per_photon : float, optional
+        Detector gain the frame was processed with, for turning the ADU columns
+        into photon counts.
     diffraction_limit : float, optional
         Per-crystal resolution estimate (nm^-1) from integrated I/sigma; reported
         without truncating reflections, as the stream's
@@ -148,6 +157,9 @@ class IndexResult:
     predicted_sigmas: Optional[Tensor] = None
     predicted_peak: Optional[Tensor] = None
     predicted_background: Optional[Tensor] = None
+    peak_background_sum: Optional[Tensor] = None
+    peak_n_pixels: Optional[Tensor] = None
+    adu_per_photon: Optional[float] = None
     diffraction_limit: Optional[float] = None
     enrichment: Optional[float] = None
     n_bright: Optional[int] = None
@@ -170,12 +182,20 @@ class FrameIndexResult:
         Accepted lattices in search order.
     positions, intensities : Tensor
         Detected peaks supplied to the first lattice search.
+    peak_background_sum, peak_n_pixels : Tensor, optional
+        Per-peak background sum (ADU) and pixel count, aligned with
+        ``positions``; the writers turn these into photon counts.
+    adu_per_photon : float, optional
+        Gain the frame was processed with.
     """
 
     frame_index: int
     crystals: list[IndexResult]
     positions: Tensor
     intensities: Tensor
+    peak_background_sum: Optional[Tensor] = None
+    peak_n_pixels: Optional[Tensor] = None
+    adu_per_photon: Optional[float] = None
 
     @property
     def n_peaks(self) -> int:
@@ -640,6 +660,8 @@ class Indexer:
         intensities_by_frame: Optional[dict[int, Tensor]] = None,
         sigmas_by_frame: Optional[dict[int, Tensor]] = None,
         weights_by_frame: Optional[dict[int, Tensor]] = None,
+        peak_bg_by_frame: Optional[dict[int, Tensor]] = None,
+        peak_npix_by_frame: Optional[dict[int, Tensor]] = None,
     ) -> dict[int, IndexResult]:
         """Index many frames with batched refinement.
 
@@ -657,6 +679,10 @@ class Indexer:
             row-for-row with ``positions_by_frame``. Default to zeros when omitted.
         weights_by_frame : dict of int -> Tensor, optional
             Per-peak detection confidences for soft seeding/refinement.
+        peak_bg_by_frame, peak_npix_by_frame : dict of int -> Tensor, optional
+            Per-peak background sum (ADU) and pixel count, aligned with
+            ``positions_by_frame``. Carried through the peak cap onto the result
+            so the writers can report photon counts.
 
         Returns
         -------
@@ -672,11 +698,13 @@ class Indexer:
                 (intensities_by_frame or {}).get(i),
                 (sigmas_by_frame or {}).get(i),
                 (weights_by_frame or {}).get(i),
+                (peak_bg_by_frame or {}).get(i),
+                (peak_npix_by_frame or {}).get(i),
             )
             for i, p in positions_by_frame.items()
         }
         seeded: list[tuple[int, int, Tensor, Tensor, Optional[Tensor]]] = []
-        for idx, (positions, intensities, _, weights) in data.items():
+        for idx, (positions, intensities, _, weights, _, _) in data.items():
             if (
                 positions.ndim != 2
                 or positions.shape[-1] != 2
@@ -724,6 +752,8 @@ class Indexer:
                 q=q,
                 intensities=data[idx][1],
                 sigmas=data[idx][2],
+                peak_bg=data[idx][4],
+                peak_npix=data[idx][5],
             )
             if built is not None:
                 out[idx] = built
@@ -784,6 +814,8 @@ class Indexer:
         intensities: Optional[Tensor] = None,
         sigmas: Optional[Tensor] = None,
         q: Optional[Tensor] = None,
+        peak_bg: Optional[Tensor] = None,
+        peak_npix: Optional[Tensor] = None,
     ) -> Optional[IndexResult]:
         # Pick the best refined candidate whose cell matches the target, or None.
         if result.A.shape[0] == 0:
@@ -836,12 +868,15 @@ class Indexer:
                 intensities=intensities,
                 sigmas=sigmas,
                 loss_history=result.history,
+                peak_background_sum=peak_bg,
+                peak_n_pixels=peak_npix,
+                adu_per_photon=self._adu_per_photon(),
             )
         return None
 
     def _positions_from_frame(
         self, r: PeakResult
-    ) -> tuple[Tensor, Tensor, Tensor, Tensor]:
+    ) -> tuple[Tensor, Tensor, Tensor, Tensor, Tensor, Tensor]:
         # Pull kept peak-blob centroids and photometry off a PeakResult
         stats = r.kept_stats
         positions = torch.stack([stats.row_centroid, stats.col_centroid], dim=-1).to(
@@ -850,10 +885,18 @@ class Indexer:
         intensities = stats.intensity_sum.to(device=self.device, dtype=self.dtype)
         sigmas = stats.intensity_sigma.to(device=self.device, dtype=self.dtype)
         weights = stats.posterior_mean.to(device=self.device, dtype=self.dtype)
-        return self._cap_peak_data(positions, intensities, sigmas, weights)
+        bg_sum = stats.background_sum.to(device=self.device, dtype=self.dtype)
+        n_pix = stats.size.to(device=self.device, dtype=self.dtype)
+        return self._cap_peak_data(
+            positions, intensities, sigmas, weights, bg_sum, n_pix
+        )
 
-    def _cap_peak_data(self, positions, intensities, sigmas, weights):
-        values = (positions, intensities, sigmas, weights)
+    def _cap_peak_data(
+        self, positions, intensities, sigmas, weights, peak_bg=None, peak_npix=None
+    ):
+        # Keep only the max_index_peaks brightest peaks, across every array that
+        # is aligned with positions, so downstream photometry stays in step
+        values = (positions, intensities, sigmas, weights, peak_bg, peak_npix)
         cap = self.seed.max_index_peaks
         if cap is None or len(positions) <= cap:
             return values
@@ -872,6 +915,8 @@ class Indexer:
         sigmas_by_frame,
         weights_by_frame,
         frame_rotations=None,
+        peak_bg_by_frame=None,
+        peak_npix_by_frame=None,
     ):
         """Index successive lattices by peeling explained peaks.
 
@@ -889,7 +934,12 @@ class Indexer:
         """
         remaining = {
             i: self._cap_peak_data(
-                p, intensities_by_frame[i], sigmas_by_frame[i], weights_by_frame[i]
+                p,
+                intensities_by_frame[i],
+                sigmas_by_frame[i],
+                weights_by_frame[i],
+                (peak_bg_by_frame or {}).get(i),
+                (peak_npix_by_frame or {}).get(i),
             )
             for i, p in positions_by_frame.items()
         }
@@ -903,6 +953,8 @@ class Indexer:
                 intensities_by_frame={i: v[1] for i, v in remaining.items()},
                 sigmas_by_frame={i: v[2] for i, v in remaining.items()},
                 weights_by_frame={i: v[3] for i, v in remaining.items()},
+                peak_bg_by_frame={i: v[4] for i, v in remaining.items()},
+                peak_npix_by_frame={i: v[5] for i, v in remaining.items()},
             )
             next_remaining = {}
             for i, result in results.items():
@@ -923,7 +975,9 @@ class Indexer:
                 hkl = torch.round(q @ torch.linalg.inv(result.A).T)
                 assigned = (hkl @ result.A.T - q).norm(dim=-1) < self.seed.peel_radius
                 if int(assigned.sum()) >= 6 and int((~assigned).sum()) >= 6:
-                    next_remaining[i] = tuple(v[~assigned] for v in remaining[i])
+                    next_remaining[i] = tuple(
+                        None if v is None else v[~assigned] for v in remaining[i]
+                    )
             remaining = next_remaining
         return output
 
@@ -991,6 +1045,8 @@ class Indexer:
                 intensities_by_frame={b["idx"]: b["I"] for b in hits},
                 sigmas_by_frame={b["idx"]: b["sig"] for b in hits},
                 weights_by_frame={b["idx"]: b["w"] for b in hits},
+                peak_bg_by_frame={b["idx"]: b["peak_bg"] for b in hits},
+                peak_npix_by_frame={b["idx"]: b["peak_npix"] for b in hits},
             )
             for b in buf:
                 crystals = results.get(b["idx"], [])
@@ -1015,14 +1071,29 @@ class Indexer:
                     self._exclude_overlaps(crystals)
                 stats.indexed += bool(crystals)
                 stats.crystals += len(crystals)
-                yield FrameIndexResult(b["idx"], crystals, b["pos"], b["I"])
+                yield FrameIndexResult(
+                    b["idx"],
+                    crystals,
+                    b["pos"],
+                    b["I"],
+                    peak_background_sum=b["peak_bg"],
+                    peak_n_pixels=b["peak_npix"],
+                    adu_per_photon=self._adu_per_photon(),
+                )
 
         def generate():
             buf = []
             for r in peak_stream:
                 stats.frames += 1
                 stats.hits += len(r) >= MIN_PEAKS_TO_INDEX
-                positions, intensities, sigmas, weights = self._positions_from_frame(r)
+                (
+                    positions,
+                    intensities,
+                    sigmas,
+                    weights,
+                    peak_bg,
+                    peak_npix,
+                ) = self._positions_from_frame(r)
                 buf.append(
                     dict(
                         idx=r.frame_index or 0,
@@ -1030,6 +1101,8 @@ class Indexer:
                         I=intensities,
                         sig=sigmas,
                         w=weights,
+                        peak_bg=peak_bg,
+                        peak_npix=peak_npix,
                         excess=r.scores.get("excess") if r.scores else None,
                         var=r.var,
                         mask=r.valid_mask,

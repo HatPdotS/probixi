@@ -24,7 +24,8 @@ def _resolve_cli_devices(
 ) -> Optional[list]:
     # Translate the --device / --devices / --gpus flags into a device list, or
     # None to keep the single-device path. --devices/--gpus imply multi-GPU.
-    picked = [f for f in (bool(device), bool(devices), gpus) if f]
+    explicit = bool(device) and device.strip().lower() != "auto"
+    picked = [f for f in (explicit, bool(devices), gpus) if f]
     if len(picked) > 1:
         raise click.UsageError("pass only one of --device / --devices / --gpus")
     if devices:
@@ -33,7 +34,7 @@ def _resolve_cli_devices(
         if gpus < 1:
             raise click.UsageError("--gpus must be >= 1")
         return [torch.device(f"cuda:{i}") for i in range(gpus)]
-    if device:
+    if device and device.strip().lower() != "auto":
         return [torch.device(device)]
     return None
 
@@ -159,7 +160,11 @@ def _run_multi_gpu(device_list: list, **kw) -> None:
     default=None,
     help="Input frames between fresh calibrations; 0 freezes the initial estimate.",
 )
-@click.option("--device", default=None, help="Torch device (default: auto).")
+@click.option(
+    "--device",
+    default=None,
+    help="Torch device, or 'auto' (the default)",
+)
 @click.option(
     "--devices",
     default=None,

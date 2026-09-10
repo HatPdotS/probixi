@@ -10,11 +10,12 @@ from .indexer import (
 )
 from .io import DataOffloader, DuckDBOffloader, PeakOffloader
 from .multigpu import BlockConfig, merge_streams, run_block_from_env, run_data_parallel
-from .probixi import Probixi, __citation__, citation
+from .probixi import Probixi, __citation__, auto_device, citation
 
 __all__ = [
     # pipeline
     "Probixi",
+    "auto_device",
     # citation
     "citation",
     "__citation__",
