@@ -71,6 +71,22 @@ _CITATION_URL = (
 __citation__ = _CITATION.strip() + "\n"
 
 
+def auto_device() -> torch.device:
+    """Pick the best available torch device.
+
+    Returns
+    -------
+    torch.device
+        ``cuda``, ``mps`` or ``cpu``.
+    """
+    if torch.cuda.is_available():
+        return torch.device("cuda")
+    mps = getattr(torch.backends, "mps", None)
+    if mps is not None and mps.is_available():
+        return torch.device("mps")
+    return torch.device("cpu")
+
+
 def citation(timeout: float = 3.0) -> str:
     text = _CITATION
     try:
@@ -122,7 +138,8 @@ class Probixi:
     seed, refine, cell_match, integrate
         Optional indexer configuration objects.
     device, dtype
-        Torch device and frame dtype.
+        Torch device and frame dtype. ``device=None`` (the default) selects the
+        best available: CUDA, else Apple MPS, else CPU.
 
     Attributes
     ----------
@@ -165,6 +182,9 @@ class Probixi:
     _beamstop_qmin: Optional[float] = field(default=None, init=False, repr=False)
 
     def __post_init__(self) -> None:
+        self.device = (
+            torch.device(self.device) if self.device is not None else auto_device()
+        )
         self.loader = DataLoader(
             self.list_file, geometry_file=self.geometry_file, cell_file=self.cell_file
         )

@@ -10,7 +10,7 @@ import torch
 from torch.multiprocessing.spawn import spawn
 
 from .io import DataLoader, DataOffloader, DuckDBOffloader, is_duckdb_path
-from .probixi import Probixi
+from .probixi import Probixi, auto_device
 
 PathLike = Union[str, Path]
 
@@ -48,14 +48,15 @@ def resolve_devices(
 ) -> list[torch.device]:
     """Normalise a device spec to a list of ``torch.device``.
 
-    ``None`` -> every visible CUDA device (or ``[cpu]`` if none); an ``int`` ->
+    ``None`` -> every visible CUDA device (or the best single device from
+    ``auto_device`` if there are none); an ``int`` ->
     the first N CUDA devices; a sequence -> those devices verbatim
     (e.g. ``["cuda:0", "cuda:1"]`` or ``["cpu", "cpu"]`` for testing).
     """
     if devices is None:
         if torch.cuda.is_available():
             return [torch.device(f"cuda:{i}") for i in range(torch.cuda.device_count())]
-        return [torch.device("cpu")]
+        return [auto_device()]
     if isinstance(devices, int):
         if devices < 1:
             raise ValueError("device count must be >= 1")
