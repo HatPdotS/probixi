@@ -67,7 +67,7 @@ _CITATION = r"""
 @software{odea_probixi,
   author  = {O'Dea, Ryan and Weinert, Tobias},
   title   = {{probixi}: Self-Calibrating Probabilistic Peak Finding for Serial X-Ray Crystallographic Data},
-  version = {0.4.0},
+  version = {0.5.0},
   year    = {2026},
   url     = {https://github.com/ryan-odea/probixi}
 }
@@ -83,8 +83,7 @@ __citation__ = _CITATION.strip() + "\n"
 
 @lru_cache(maxsize=1)
 def mps_is_usable() -> bool:
-    """Whether this MPS can be used.
-    """
+    """Whether this MPS can be used."""
     try:
         torch.linalg.inv(torch.eye(3, device="mps"))
     except Exception:
