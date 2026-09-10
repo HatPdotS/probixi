@@ -7,7 +7,7 @@ from typing import Any, Literal, Optional, cast
 import click
 import torch
 
-from probixi.indexer import IntegrateConfig, SeedConfig
+from probixi.indexer import SeedConfig
 from probixi.io import DataOffloader, DuckDBOffloader, PeakOffloader, is_duckdb_path
 from probixi.probixi import Probixi
 
@@ -72,9 +72,6 @@ def _run_multi_gpu(device_list: list, **kw) -> None:
         threads_per_worker=kw["threads_per_worker"],
         quiet=kw["quiet"],
         seed=SeedConfig(max_lattices=kw["max_lattices"]),
-        integrate=IntegrateConfig(
-            radii=kw["integration_radii"], ewald_cutoff=kw["ewald_cutoff"]
-        ),
         recalibrate_every=kw["recalibrate_every"],
     )
 
@@ -140,19 +137,11 @@ def _run_multi_gpu(device_list: list, **kw) -> None:
     help="Frames per batched refinement pass.",
 )
 @click.option(
-    "--integration-radii",
-    type=(float, float, float),
-    default=None,
-    help="Signal, inner-background and outer-background radii (pixels).",
-)
-@click.option(
-    "--ewald-cutoff",
-    type=click.FloatRange(min=0, min_open=True),
-    default=None,
-    help="Global radial Ewald distance (A^-1); default: adaptive prediction.",
-)
-@click.option(
-    "--max-lattices", type=click.IntRange(min=1), default=1, show_default=True
+    "--max-lattices",
+    type=click.IntRange(min=1),
+    default=1,
+    show_default=True,
+    help="Lattices to search per frame, peeling indexed peaks between passes.",
 )
 @click.option(
     "--recalibrate-every",
@@ -279,8 +268,6 @@ def main(
     start: Optional[int],
     stop: Optional[int],
     batch_size: int,
-    integration_radii: Optional[tuple],
-    ewald_cutoff: Optional[float],
     max_lattices: int,
     recalibrate_every: Optional[int],
     device: Optional[str],
@@ -327,8 +314,6 @@ def main(
             start=start,
             stop=stop,
             batch_size=batch_size,
-            integration_radii=integration_radii,
-            ewald_cutoff=ewald_cutoff,
             max_lattices=max_lattices,
             recalibrate_every=recalibrate_every,
             seed_frames=seed_frames,
@@ -356,7 +341,6 @@ def main(
         flux_var_floor=flux_var_floor,
         device=dev,
         seed=SeedConfig(max_lattices=max_lattices),
-        integrate=IntegrateConfig(radii=integration_radii, ewald_cutoff=ewald_cutoff),
     )
 
     meta = probixi.metadata
@@ -449,7 +433,6 @@ def main(
     )
     if is_duckdb_path(output):
         offloader = DuckDBOffloader
-        offload_kwargs["multi_lattice"] = max_lattices > 1
         offload_kwargs["frame_range"] = (
             start or 0,
             stop if stop is not None else meta.n_frames,

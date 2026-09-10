@@ -10,6 +10,7 @@ from torch import Tensor
 
 from .indexer import (
     CellMatchConfig,
+    FrameIndexResult,
     FrameIndexStream,
     Indexer,
     IndexStats,
@@ -20,6 +21,7 @@ from .indexer import (
 )
 from .indexer.forward import detector_to_q
 from .indexer.indexer import MIN_PEAKS_TO_INDEX
+from .indexer.integrate import radial_profile, radii_from_profile
 from .io import (
     CellParams,
     DataLoader,
@@ -53,6 +55,10 @@ _BEAMSTOP_EDGE_FRACTION = 0.1
 _BEAMSTOP_MIN_FRACTION = 0.05
 _BEAMSTOP_MIN_PEAKS = 200
 _BEAMSTOP_MIN_BIN_PEAKS = 5
+
+# Frames pooled, and peaks required, when measuring the integration radii
+_RADII_MAX_FRAMES = 32
+_RADII_MIN_PEAKS = 200
 
 
 # --- BEGIN GENERATED CITATION ---
@@ -511,6 +517,31 @@ class Probixi:
             return None
         return q_min
 
+    def _learn_integration_radii(
+        self, n_seed: int
+    ) -> Optional[tuple[float, float, float]]:
+        profile = None
+        n_peaks = 0
+        for res in self.peak_stream(
+            self.frames(start=n_seed, stop=n_seed + _RADII_MAX_FRAMES),
+            start_index=n_seed,
+            update_noise=False,
+            estimate_scale=False,
+        ):
+            excess = res.scores.get("excess") if res.scores else None
+            ks = res.kept_stats
+            if excess is None or ks is None or ks.row_centroid.numel() == 0:
+                continue
+            positions = torch.stack([ks.row_centroid, ks.col_centroid], dim=-1).to(
+                excess
+            )
+            one = radial_profile(excess, positions, pixel_valid=res.valid_mask)
+            profile = one if profile is None else profile + one
+            n_peaks += int(positions.shape[0])
+        if profile is None or n_peaks < _RADII_MIN_PEAKS:
+            return None
+        return radii_from_profile(profile)
+
     def _apply_beamstop_qmin(self, q_min: float) -> None:
         # AND a |q| >= q_min beam-center exclusion into the noise model's masks so
         # detection and the background sources skip the beamstop region.
@@ -686,6 +717,8 @@ class Probixi:
             self.indexer._measured_gain = self.noise.gain
         if self.indexer is not None:
             self.indexer._bg_annulus_pixels = self.finder.background_annulus_pixels()
+        if self.indexer is not None:
+            self.indexer._measured_radii = self._learn_integration_radii(n_seed)
         self._beamstop_qmin = self._infer_beamstop_qmin(seed)
         if self._beamstop_qmin:
             self._apply_beamstop_qmin(self._beamstop_qmin)
@@ -769,7 +802,7 @@ class Probixi:
         update_noise: bool = True,
         recalibrate_every: Optional[int] = None,
         enrich_alpha: Optional[float] = None,
-    ) -> IndexStream:
+    ) -> IndexStream[FrameIndexResult]:
         """Yield individual lattices from ``index_frame_stream``.
 
         Parameters
@@ -826,7 +859,12 @@ class Probixi:
             Includes unindexed images and physical-frame statistics.
         """
         if self.indexer is None:
-            raise RuntimeError("index_stream requires a target cell")
+            raise RuntimeError(
+                "index_frame_stream requires a target cell; construct Probixi "
+                "with a cell_file (omit it only for peak-only use via "
+                "peak_stream)"
+            )
+        indexer = self.indexer
         if recalibrate_every is not None:
             if recalibrate_every < 0:
                 raise ValueError("recalibrate_every must be nonnegative")
@@ -835,12 +873,14 @@ class Probixi:
         self._frame_scales.clear()
         stats = IndexStats()
 
-        def individual():
+        # a recalibration boundary can fall inside a batch, so split batched
+        # input into single frames whenever a schedule is in force
+        def _individual() -> Iterator[Tensor]:
             for item in frames:
                 yield from item if item.ndim == 3 else (item,)
 
-        def generate():
-            source = iter(frames) if recalibrate_every is None else iter(individual())
+        def _gen() -> Iterator[FrameIndexResult]:
+            source = iter(frames) if recalibrate_every is None else iter(_individual())
             index = start_index
             while True:
                 try:
@@ -857,7 +897,7 @@ class Probixi:
                     (first,), islice(source, limit - 1) if limit else source
                 )
                 tc = self.threshold_calibration
-                base = self.indexer.index_frame_stream(
+                base = indexer.index_frame_stream(
                     self.peak_stream(
                         segment,
                         start_index=index,
@@ -885,7 +925,7 @@ class Probixi:
                 if limit is None:
                     break
 
-        return FrameIndexStream(generate(), stats=stats)
+        return FrameIndexStream(_gen(), stats=stats)
 
     def _recalibrate(self, boundary: int) -> None:
         options = self._calibration_options.copy()
