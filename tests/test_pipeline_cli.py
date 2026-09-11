@@ -454,8 +454,9 @@ def test_pipeline_normalises_a_string_device(run_files, geom_path):
 
 
 def _run_with_diffraction(tmp_path, geom_path, pipeline_cell, planted_U, n_planted):
-    # N_NOISE blank frames to calibrate on, then n_planted frames that actually
-    # diffract, which is what the radius measurement needs.
+    # N_NOISE blank frames plus n_planted frames that actually diffract, which
+    # is what the radius measurement needs. Calibration draws its frames at
+    # random, so the diffracting frames have to outnumber the blanks.
     geom = read_geometry(geom_path).to_dict()
     frame, _ = sim.simulate_indexable_frame(
         geom,
@@ -474,10 +475,10 @@ def _run_with_diffraction(tmp_path, geom_path, pipeline_cell, planted_U, n_plant
 def test_calibrate_measures_the_integration_radii(
     tmp_path, geom_path, pipeline_cell, planted_U
 ):
-    # Measured on frames carrying diffraction, not on the signal-free
-    # calibration block, and ordered so IntegrateConfig accepts them.
+    # Measured on the frames carrying diffraction, disjoint from the ones
+    # calibration consumed, and ordered so IntegrateConfig accepts them.
     lst_path = _run_with_diffraction(
-        tmp_path, geom_path, pipeline_cell, planted_U, n_planted=12
+        tmp_path, geom_path, pipeline_cell, planted_U, n_planted=20
     )
     px = _build_pipeline(lst_path, geom_path)
     assert px.indexer._measured_radii is None

@@ -84,3 +84,23 @@ def test_fresh_calibration_keeps_scale_reference(monkeypatch):
     assert p._scale_ref is reference
     assert p._calibration_boundary == 8
     assert p.threshold_calibration.threshold == 6.0
+
+
+def test_sampled_frames_are_deterministic_spread_and_disjoint():
+    def pipeline(seed, n_frames=1000):
+        p = object.__new__(Probixi)
+        p.random_seed = seed
+        p.loader = SimpleNamespace(metadata=SimpleNamespace(n_frames=n_frames))
+        return p
+
+    p = pipeline(1988)
+    warmup = p._sample_frame_indices(32)
+    assert len(warmup) == 32 and warmup == sorted(warmup)
+    assert warmup == p._sample_frame_indices(32)
+    assert warmup != pipeline(1989)._sample_frame_indices(32)
+    # spread over the run, not the leading frames
+    assert max(warmup) > 500
+    training = p._sample_frame_indices(32, warmup)
+    assert not set(training) & set(warmup)
+    # a run shorter than the request yields every frame
+    assert pipeline(1988, 8)._sample_frame_indices(32) == list(range(8))
