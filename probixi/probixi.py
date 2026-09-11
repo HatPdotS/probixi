@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import random
 from dataclasses import dataclass, field
 from functools import lru_cache
 from itertools import chain, islice
@@ -159,6 +160,8 @@ class Probixi:
         Opt-in; intended for XFEL/SFX or jet-intensity-variable data.
     peak_size_max : int, default 30
         Maximum connected-component size accepted as a peak.
+    random_seed : int, default 1988
+        Seed for the draw of calibration and radii-training frames.
     seed, refine, cell_match, integrate
         Optional indexer configuration objects.
     device, dtype
@@ -186,6 +189,7 @@ class Probixi:
     mf_threshold: float = 5.0
     flux_variance: bool = False
     flux_var_floor: float = 0.15
+    random_seed: int = 1988
     seed: Optional[SeedConfig] = None
     refine: Optional[RefineConfig] = None
     cell_match: Optional[CellMatchConfig] = None
@@ -306,6 +310,16 @@ class Probixi:
             batch_size=batch_size,
             prefetch=prefetch,
         )
+
+    def _sample_frame_indices(self, k: int, exclude: Iterable[int] = ()) -> list[int]:
+        skip = set(exclude)
+        pool = [i for i in range(int(self.metadata.n_frames)) if i not in skip]
+        return sorted(random.Random(self.random_seed).sample(pool, min(k, len(pool))))
+
+    def _frames_at(self, indices: Iterable[int]) -> Iterator[Tensor]:
+        # the loader streams contiguous ranges only; scattered frames go one by one
+        for i in indices:
+            yield next(iter(self.frames(start=i, stop=i + 1)))
 
     def _resolve_frame_index(self, frame: Union[int, str, tuple]) -> int:
         # int -> absolute index; "file//event" or (file, event) -> cumulative index
@@ -531,13 +545,12 @@ class Probixi:
         return q_min
 
     def _learn_integration_radii(
-        self, n_seed: int
+        self, exclude: Iterable[int]
     ) -> Optional[tuple[float, float, float]]:
         profile = None
         n_peaks = 0
         for res in self.peak_stream(
-            self.frames(start=n_seed, stop=n_seed + _RADII_MAX_FRAMES),
-            start_index=n_seed,
+            self._frames_at(self._sample_frame_indices(_RADII_MAX_FRAMES, exclude)),
             update_noise=False,
             estimate_scale=False,
         ):
@@ -675,7 +688,8 @@ class Probixi:
         Parameters
         ----------
         n_seed : int, default 32
-            Leading frames to calibrate on when ``seed_frames`` is not given.
+            Frames drawn at random from the run to calibrate on when
+            ``seed_frames`` is not given.
         seed_frames : iterable of torch.Tensor, optional
             Explicit calibration frames; overrides ``n_seed``.
         eigen_modes : int, default 0
@@ -693,11 +707,12 @@ class Probixi:
         CalibrationResult
             The applied noise calibration.
         """
-        seed = (
-            list(seed_frames)
-            if seed_frames is not None
-            else list(islice(self.frames(), n_seed))
-        )
+        seed_indices: list[int] = []
+        if seed_frames is not None:
+            seed = list(seed_frames)
+        else:
+            seed_indices = self._sample_frame_indices(n_seed)
+            seed = list(self._frames_at(seed_indices))
         if not seed:
             raise ValueError("no seed frames available to calibrate on")
         self._calibration_options = dict(
@@ -731,7 +746,7 @@ class Probixi:
         if self.indexer is not None:
             self.indexer._bg_annulus_pixels = self.finder.background_annulus_pixels()
         if self.indexer is not None:
-            self.indexer._measured_radii = self._learn_integration_radii(n_seed)
+            self.indexer._measured_radii = self._learn_integration_radii(seed_indices)
         self._beamstop_qmin = self._infer_beamstop_qmin(seed)
         if self._beamstop_qmin:
             self._apply_beamstop_qmin(self._beamstop_qmin)

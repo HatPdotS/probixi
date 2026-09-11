@@ -168,6 +168,7 @@ class BlockConfig:
     recalibrate_every: Optional[int] = None
     calibration_seed: int = 0
     seed_frames: int = 32
+    random_seed: int = 1988
     target_noise_peaks: Optional[float] = 5.0
     noise_mode: str = "online"
     warmup_frames: int = 16
@@ -215,6 +216,7 @@ def run_block(
         flux_variance=cfg.flux_variance,
         flux_var_floor=cfg.flux_var_floor,
         device=dev,
+        random_seed=cfg.random_seed,
         seed=cfg.seed,
         integrate=cfg.integrate,
         peak_size_max=cfg.peak_size_max,
@@ -304,6 +306,7 @@ def run_data_parallel(
     peak_size_max: int = 30,
     recalibrate_every: Optional[int] = None,
     seed_frames: int = 32,
+    random_seed: int = 1988,
     target_noise_peaks: Optional[float] = 5.0,
     noise_mode: str = "online",
     warmup_frames: int = 16,
@@ -344,6 +347,7 @@ def run_data_parallel(
         peak_size_max=peak_size_max,
         recalibrate_every=recalibrate_every,
         seed_frames=seed_frames,
+        random_seed=random_seed,
         calibration_seed=torch.initial_seed(),
         target_noise_peaks=target_noise_peaks,
         noise_mode=noise_mode,

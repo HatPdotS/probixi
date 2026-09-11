@@ -61,6 +61,7 @@ def _run_multi_gpu(device_list: list, **kw) -> None:
         stop=kw["stop"],
         batch_size=kw["batch_size"],
         seed_frames=kw["seed_frames"],
+        random_seed=kw["random_seed"],
         target_noise_peaks=kw["target_noise_peaks"],
         noise_mode=kw["noise_mode"],
         warmup_frames=kw["warmup_frames"],
@@ -197,6 +198,13 @@ def _run_multi_gpu(device_list: list, **kw) -> None:
     help="Frames used to calibrate the noise model and detection threshold.",
 )
 @click.option(
+    "--random-seed",
+    type=int,
+    default=1988,
+    show_default=True,
+    help="Seed for the random draw of calibration and radii-training frames.",
+)
+@click.option(
     "--target-noise-peaks",
     type=float,
     default=5.0,
@@ -277,6 +285,7 @@ def main(
     noise_mode: str,
     warmup_frames: int,
     seed_frames: int,
+    random_seed: int,
     target_noise_peaks: float,
     flux_variance: bool,
     flux_var_floor: float,
@@ -317,6 +326,7 @@ def main(
             max_lattices=max_lattices,
             recalibrate_every=recalibrate_every,
             seed_frames=seed_frames,
+            random_seed=random_seed,
             target_noise_peaks=target_noise_peaks,
             noise_mode=noise_mode,
             warmup_frames=warmup_frames,
@@ -340,6 +350,7 @@ def main(
         flux_variance=flux_variance,
         flux_var_floor=flux_var_floor,
         device=dev,
+        random_seed=random_seed,
         seed=SeedConfig(max_lattices=max_lattices),
     )
 
